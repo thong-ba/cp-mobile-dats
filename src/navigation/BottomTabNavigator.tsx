@@ -3,7 +3,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React from 'react';
 import { HomeScreen } from '../screens/CommonScreens/ComonHomeScreen';
 import { NotificationsScreen } from '../screens/CustomerScreens/NotificationsScreen';
-import { ProfileScreen } from '../screens/CustomerScreens/ProfileScreen';
+import AuthStackNavigator from './AuthStackNavigator';
 
 const Tab = createBottomTabNavigator();
 
@@ -52,7 +52,7 @@ export default function BottomTabNavigator() {
       />
       <Tab.Screen
         name="Profile"
-        component={ProfileScreen}
+        component={AuthStackNavigator}
         options={{
           tabBarLabel: 'Tôi',
           tabBarIcon: ({ color, size }) => (
