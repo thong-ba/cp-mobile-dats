@@ -2,8 +2,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React from 'react';
 import { HomeScreen } from '../screens/CommonScreens/ComonHomeScreen';
-import { NotificationsScreen } from '../screens/CommonScreens/NotificationsScreen';
-import { ProfileScreen } from '../screens/CommonScreens/ProfileScreen';
+import { NotificationsScreen } from '../screens/CustomerScreens/NotificationsScreen';
+import { ProfileScreen } from '../screens/CustomerScreens/ProfileScreen';
 
 const Tab = createBottomTabNavigator();
 
