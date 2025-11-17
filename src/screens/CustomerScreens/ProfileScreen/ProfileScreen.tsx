@@ -1,44 +1,214 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { COLORS } from '../../../constants/color';
+import { CommonActions, useNavigation } from '@react-navigation/native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Avatar, Button, Card, Chip, Divider, List, Snackbar, Text, useTheme } from 'react-native-paper';
+import { useAuth } from '../../../context/AuthContext';
 
 const ProfileScreen = () => {
+  const { authState, logout, isAuthenticated } = useAuth();
+  const navigation = useNavigation();
+  const theme = useTheme();
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [logoutSnackbarVisible, setLogoutSnackbarVisible] = useState(false);
+  const logoutTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const menuItems = [
-    { icon: 'account-outline', label: 'Thông tin cá nhân' },
-    { icon: 'map-marker-outline', label: 'Địa chỉ' },
-    { icon: 'credit-card-outline', label: 'Phương thức thanh toán' },
-    { icon: 'shopping-outline', label: 'Đơn hàng của tôi' },
-    { icon: 'heart-outline', label: 'Sản phẩm yêu thích' },
-    { icon: 'cog-outline', label: 'Cài đặt' },
-    { icon: 'help-circle-outline', label: 'Trợ giúp' },
+    { icon: 'account-outline', label: 'Thông tin cá nhân', key: 'profile' },
+    { icon: 'map-marker-outline', label: 'Địa chỉ', key: 'address' },
+    { icon: 'credit-card-outline', label: 'Phương thức thanh toán', key: 'payment' },
+    { icon: 'shopping-outline', label: 'Đơn hàng của tôi', key: 'orders' },
+    { icon: 'heart-outline', label: 'Sản phẩm yêu thích', key: 'favorite' },
+    { icon: 'cog-outline', label: 'Cài đặt', key: 'settings' },
+    { icon: 'help-circle-outline', label: 'Trợ giúp', key: 'help' },
   ];
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Tôi</Text>
-      </View>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.profileSection}>
-          <View style={styles.avatar}>
-            <MaterialCommunityIcons name="account" size={40} color={COLORS.gray} />
-          </View>
-          <Text style={styles.name}>Người dùng</Text>
-          <Text style={styles.email}>user@example.com</Text>
-        </View>
+  const profile = authState.customerProfile;
 
-        <View style={styles.menuSection}>
-          {menuItems.map((item, index) => (
-            <TouchableOpacity key={index} style={styles.menuItem} activeOpacity={0.7}>
-              <MaterialCommunityIcons name={item.icon as any} size={24} color={COLORS.text} />
-              <Text style={styles.menuLabel}>{item.label}</Text>
-              <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.gray} />
-            </TouchableOpacity>
+  const profileDetails = useMemo(() => {
+    if (!profile) {
+      return [];
+    }
+    return [
+      { label: 'Họ và tên', value: profile.fullName },
+      { label: 'Tên người dùng', value: profile.userName },
+      { label: 'Email', value: profile.email },
+      { label: 'Số điện thoại', value: profile.phoneNumber },
+      { label: 'Giới tính', value: profile.gender },
+      { label: 'Ngày sinh', value: profile.dateOfBirth },
+      { label: 'Trạng thái', value: profile.status },
+      { label: 'Xác thực 2 lớp', value: profile.twoFactorEnabled ? 'Bật' : 'Tắt' },
+      { label: 'Trạng thái KYC', value: profile.kycStatus },
+      { label: 'Lần đăng nhập cuối', value: profile.lastLogin },
+      { label: 'Số địa chỉ', value: profile.addressCount },
+      { label: 'Số đơn hàng', value: profile.orderCount },
+      { label: 'Đơn hủy', value: profile.cancelCount },
+      { label: 'Đơn trả', value: profile.returnCount },
+      { label: 'Đơn chưa thanh toán', value: profile.unpaidOrderCount },
+      { label: 'Đơn gần nhất', value: profile.lastOrderDate },
+      { label: 'Danh mục yêu thích', value: profile.preferredCategory },
+    ];
+  }, [profile]);
+
+  type QuickStat = { label: string; value: number; icon: string };
+
+  const quickStats: QuickStat[] = useMemo(() => {
+    if (!profile) {
+      return [];
+    }
+    return [
+      { label: 'Đơn hàng', value: profile.orderCount, icon: 'shopping-outline' },
+      { label: 'Voucher', value: profile.voucherCount, icon: 'ticket-percent-outline' },
+      { label: 'Điểm', value: profile.loyaltyPoints, icon: 'star-outline' },
+    ];
+  }, [profile]);
+
+  useEffect(
+    () => () => {
+      if (logoutTimerRef.current) {
+        clearTimeout(logoutTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleLogout = () => {
+    console.log('[ProfileScreen] logout requested');
+    setLogoutSnackbarVisible(true);
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+    }
+    logoutTimerRef.current = setTimeout(async () => {
+      setLogoutSnackbarVisible(false);
+      try {
+        await logout();
+        console.log('[ProfileScreen] logout succeeded');
+        const parentNavigator = navigation.getParent();
+        parentNavigator?.dispatch(
+          CommonActions.reset({
+            index: 0,
+            routes: [{ name: 'Home' as never }],
+          }),
+        );
+      } catch (error) {
+        console.log('[ProfileScreen] logout failed', error);
+      }
+    }, 3000);
+  };
+
+  return (
+    <>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Card mode="elevated" style={styles.heroCard}>
+          <Card.Content>
+            <View style={styles.heroRow}>
+              {profile?.avatarURL ? (
+                <Avatar.Image size={72} source={{ uri: profile.avatarURL }} />
+              ) : (
+                <Avatar.Icon
+                  size={72}
+                  icon="account"
+                  color={theme.colors.primary}
+                  style={{ backgroundColor: '#FFEADB' }}
+                />
+              )}
+              <View style={styles.heroText}>
+                <Text variant="titleMedium">
+                  {profile?.fullName ?? 'Bạn chưa đăng nhập'}
+                </Text>
+                <Text variant="bodyMedium" style={styles.email}>
+                  {profile?.email ?? 'Hãy đăng nhập để xem thông tin cá nhân'}
+                </Text>
+                {profile?.phoneNumber && (
+                  <Text variant="bodySmall" style={styles.phone}>
+                    {profile.phoneNumber}
+                  </Text>
+                )}
+          </View>
+        </View>
+            {isAuthenticated && profile && (
+              <>
+                <View style={styles.chipRow}>
+                  {quickStats.map((stat) => (
+                    <Chip
+                      key={stat.label}
+                      icon={stat.icon as any}
+                      elevated
+                      style={styles.chip}
+                      textStyle={{ fontWeight: '700' }}
+                    >
+                      {stat.value} {stat.label}
+                    </Chip>
           ))}
         </View>
+                <Button
+                  mode="contained"
+                  icon="logout"
+                  onPress={handleLogout}
+                  style={styles.logoutButton}
+                >
+                  Đăng xuất
+                </Button>
+              </>
+            )}
+          </Card.Content>
+        </Card>
+
+          <List.Section style={styles.listSection}>
+          <Card mode="contained" style={styles.detailCard}>
+            <Card.Title
+              title="Thông tin cá nhân"
+              subtitle="Cập nhật từ tài khoản khách hàng"
+              left={(props) => <List.Icon {...props} icon="account-details-outline" />}
+              right={(props) => (
+                <Button
+                  mode="text"
+                  compact
+                  onPress={() => setDetailsExpanded((prev) => !prev)}
+                >
+                  {detailsExpanded ? 'Thu gọn' : 'Xem tất cả'}
+                </Button>
+              )}
+            />
+            <Card.Content>
+              {profileDetails
+                .slice(0, detailsExpanded ? profileDetails.length : 5)
+                .map((item) => (
+                  <View key={item.label} style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>{item.label}</Text>
+                    <Text style={styles.detailValue}>
+                      {item.value === null || item.value === undefined || item.value === ''
+                        ? 'Chưa cập nhật'
+                        : String(item.value)}
+                    </Text>
+                  </View>
+                ))}
+            </Card.Content>
+          </Card>
+          {menuItems
+            .filter((item) => item.key !== 'profile')
+            .map((item) => (
+              <React.Fragment key={item.key}>
+                <List.Item
+                  title={item.label}
+                  left={(props) => <List.Icon {...props} icon={item.icon as any} />}
+                  right={(props) => <List.Icon {...props} icon="chevron-right" />}
+                  onPress={() => {}}
+                />
+                <Divider />
+              </React.Fragment>
+            ))}
+        </List.Section>
       </ScrollView>
     </View>
+      <Snackbar
+        visible={logoutSnackbarVisible}
+        onDismiss={() => setLogoutSnackbarVisible(false)}
+        duration={3000}
+      >
+        Đăng xuất thành công
+      </Snackbar>
+    </>
   );
 };
 
@@ -47,63 +217,70 @@ export default ProfileScreen;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F7F7F7',
-  },
-  header: {
-    backgroundColor: '#FF6A00',
-    paddingTop: 50,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#FFFFFF',
   },
   content: {
-    paddingBottom: 24,
+    padding: 16,
+    paddingBottom: 32,
+    gap: 16,
   },
-  profileSection: {
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    paddingVertical: 24,
-    marginBottom: 12,
+  heroCard: {
+    borderRadius: 20,
   },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#F0F0F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  name: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  email: {
-    fontSize: 14,
-    color: COLORS.gray,
-  },
-  menuSection: {
-    backgroundColor: '#FFFFFF',
-  },
-  menuItem: {
+  heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    gap: 16,
   },
-  menuLabel: {
+  heroText: {
     flex: 1,
-    marginLeft: 12,
-    fontSize: 16,
-    color: COLORS.text,
+  },
+  email: {
+    marginTop: 4,
+    color: '#6B6B6B',
+  },
+  phone: {
+    marginTop: 2,
+    color: '#6B6B6B',
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 16,
+  },
+  chip: {
+    backgroundColor: '#FFF3EB',
+  },
+  logoutButton: {
+    marginTop: 16,
+    borderRadius: 10,
+  },
+  listSection: {
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  detailCard: {
+    borderRadius: 20,
+    marginTop: 8,
+    backgroundColor: '#FFFFFF',
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#EFEFEF',
+    paddingVertical: 10,
+  },
+  detailLabel: {
+    flex: 1,
+    fontWeight: '600',
+    color: '#6B6B6B',
+  },
+  detailValue: {
+    flex: 1,
+    textAlign: 'right',
+    color: '#272727',
   },
 });
 

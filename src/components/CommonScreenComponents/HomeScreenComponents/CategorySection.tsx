@@ -2,18 +2,23 @@ import React from 'react';
 import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../../../constants/color';
 
-type Category = {
-  id: number;
-  name: string;
-  image: string;
-};
-
 type Props = {
   title?: string;
-  categories: Category[];
+  categories: {
+    id: number | string;
+    name: string;
+    image: string;
+  }[];
+  selectedCategoryName?: string | null;
+  onSelectCategory?: (categoryName: string | null) => void;
 };
 
-const CategorySection: React.FC<Props> = ({ title = 'Danh mục nổi bật', categories }) => {
+const CategorySection: React.FC<Props> = ({
+  title = 'Danh mục nổi bật',
+  categories,
+  selectedCategoryName,
+  onSelectCategory,
+}) => {
   return (
     <View style={{ marginTop: 16 }}>
       <Text style={styles.title}>{title}</Text>
@@ -22,12 +27,31 @@ const CategorySection: React.FC<Props> = ({ title = 'Danh mục nổi bật', ca
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 5 }}
       >
-        {categories.map((cat) => (
-          <TouchableOpacity key={cat.id} style={styles.categoryChip} activeOpacity={0.85}>
-            <Image source={{ uri: cat.image }} style={styles.categoryImage} />
-            <Text style={styles.categoryText}>{cat.name}</Text>
-          </TouchableOpacity>
-        ))}
+        {categories.map((cat) => {
+          const isSelected =
+            selectedCategoryName &&
+            cat.name.toLocaleLowerCase() === selectedCategoryName.toLocaleLowerCase();
+          return (
+            <TouchableOpacity
+              key={cat.id}
+              style={[styles.categoryChip, isSelected && styles.categoryChipSelected]}
+              activeOpacity={0.85}
+              onPress={() =>
+                onSelectCategory?.(isSelected ? null : cat.name)
+              }
+            >
+              <Image source={{ uri: cat.image }} style={styles.categoryImage} />
+              <Text
+                style={[
+                  styles.categoryText,
+                  isSelected && styles.categoryTextSelected,
+                ]}
+              >
+                {cat.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -56,6 +80,8 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   categoryImage: {
     width: 28,
@@ -66,6 +92,13 @@ const styles = StyleSheet.create({
   categoryText: {
     color: COLORS.text,
     fontWeight: '600',
+  },
+  categoryChipSelected: {
+    backgroundColor: '#FFEFE6',
+    borderColor: COLORS.primary,
+  },
+  categoryTextSelected: {
+    color: COLORS.primary,
   },
 });
 

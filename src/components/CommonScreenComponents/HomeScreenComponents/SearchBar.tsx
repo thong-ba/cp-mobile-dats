@@ -1,9 +1,27 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { COLORS } from '../../../constants/color';
 
-const SearchBar = () => {
+type Props = {
+  value?: string;
+  onChangeText?: (text: string) => void;
+  onSubmitEditing?: () => void;
+  isLoading?: boolean;
+};
+
+const SearchBar: React.FC<Props> = ({
+  value,
+  onChangeText,
+  onSubmitEditing,
+  isLoading = false,
+}) => {
   const suggestions = useMemo(
     () => ['JBL Party 200', 'Sony Sonic', 'LG King', 'Sony WH-1000XM5', 
         'JBL Flip 6', 'Shure MV7', 'Sony SRS-XB', 'Sony SRS-XB1000', 
@@ -28,13 +46,21 @@ const SearchBar = () => {
             placeholder={`${suggestions[placeholderIndex]}...`}
             placeholderTextColor={COLORS.gray}
             style={styles.input}
+            value={value}
+            onChangeText={onChangeText}
+            onSubmitEditing={() => onSubmitEditing?.()}
+            returnKeyType="search"
           />
           {/* <TouchableOpacity activeOpacity={0.7}>
             <MaterialCommunityIcons name="camera-outline" size={22} color={COLORS.gray} />
           </TouchableOpacity> */}
         </View>
         <TouchableOpacity style={styles.actionIcon} activeOpacity={0.8}>
-          <MaterialCommunityIcons name="cart-outline" size={22} color={COLORS.white} />
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#FF6A00" />
+          ) : (
+            <MaterialCommunityIcons name="cart-outline" size={22} color={COLORS.white} />
+          )}
         </TouchableOpacity>
         <TouchableOpacity style={styles.actionIcon} activeOpacity={0.8}>
           <MaterialCommunityIcons name="message-text-outline" size={22} color={COLORS.white} />

@@ -1,13 +1,65 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Snackbar } from 'react-native-paper';
 import { LoginForm } from '../../../components/CommonScreenComponents/LoginComponents';
+import { useAuth } from '../../../context/AuthContext';
+import { LoginRequest } from '../../../types/auth';
 
 export default function LoginScreen() {
   const navigation = useNavigation();
+  const { login } = useAuth();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successVisible, setSuccessVisible] = useState(false);
+  const successTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleSubmit = useCallback(async ({ email, password }: LoginRequest) => {
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    try {
+      await login({ email, password });
+      console.log('[LoginScreen] login succeeded');
+      setSuccessVisible(true);
+      if (successTimerRef.current) {
+        clearTimeout(successTimerRef.current);
+      }
+      successTimerRef.current = setTimeout(() => {
+        setSuccessVisible(false);
+        const tabNavigator = navigation.getParent();
+        tabNavigator?.navigate('Home' as never);
+      }, 3000);
+    } catch (error: unknown) {
+      console.log('[LoginScreen] login failed', error);
+      let message = 'Không thể đăng nhập. Vui lòng thử lại.';
+      if (typeof error === 'object' && error !== null) {
+        const maybeMessage = (error as { message?: string }).message;
+        if (maybeMessage) {
+          message = maybeMessage;
+        }
+        const axiosResponseMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+        if (axiosResponseMessage) {
+          message = axiosResponseMessage;
+        }
+      }
+      setErrorMessage(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) {
+        clearTimeout(successTimerRef.current);
+      }
+    };
+  }, []);
+
   return (
-    <SafeAreaView style={styles.safe}>
+    <>
+      <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         <View style={styles.headerArea}>
           <Text style={styles.screenTitle}>Đăng nhập</Text>
@@ -15,10 +67,7 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.card}>
-          <LoginForm hideTitle onSubmit={(payload) => {
-            // TODO: integrate with AuthService later
-            console.log('Login submit', payload);
-          }} />
+          <LoginForm hideTitle onSubmit={handleSubmit} isSubmitting={isSubmitting} errorMessage={errorMessage} />
 
           <View style={styles.dividerRow}>
             <View style={styles.divider} />
@@ -44,6 +93,14 @@ export default function LoginScreen() {
         </View>
       </ScrollView>
     </SafeAreaView>
+      <Snackbar
+        visible={successVisible}
+        onDismiss={() => setSuccessVisible(false)}
+        duration={3000}
+      >
+        Đăng nhập thành công
+      </Snackbar>
+    </>
   );
 }
 

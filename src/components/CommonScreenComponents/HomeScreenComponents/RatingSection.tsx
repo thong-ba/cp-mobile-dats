@@ -4,7 +4,7 @@ import { FlatList, Image, StyleSheet, Text, View } from 'react-native';
 import { COLORS } from '../../../constants/color';
 
 type Rated = {
-  id: number;
+  id: string;
   name: string;
   image: string;
   rating: number; // 0..5

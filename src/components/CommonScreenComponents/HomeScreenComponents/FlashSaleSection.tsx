@@ -5,7 +5,7 @@ import { COLORS } from '../../../constants/color';
 const ORANGE = '#FF6A00';
 
 type Product = {
-  id: number;
+  id: string;
   name: string;
   price: number;
   image: string;

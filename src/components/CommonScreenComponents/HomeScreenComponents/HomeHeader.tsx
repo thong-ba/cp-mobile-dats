@@ -4,13 +4,30 @@ import SearchBar from './SearchBar';
 
 const ORANGE = '#FF6A00';
 
-const HomeHeader = () => {
+type Props = {
+  keyword?: string;
+  onKeywordChange?: (text: string) => void;
+  onSubmitSearch?: () => void;
+  isSearching?: boolean;
+};
+
+const HomeHeader: React.FC<Props> = ({
+  keyword,
+  onKeywordChange,
+  onSubmitSearch,
+  isSearching,
+}) => {
   return (
     <View style={styles.header}>
       {/* <Text style={styles.appTitle}>DATS Application</Text>
       <Text style={styles.subtitle}>Âm thanh chất lượng cho mọi khoảnh khắc</Text> */}
       <View>
-        <SearchBar />
+        <SearchBar
+          value={keyword}
+          onChangeText={onKeywordChange}
+          onSubmitEditing={() => onSubmitSearch?.()}
+          isLoading={Boolean(isSearching)}
+        />
       </View>
     </View>
   );

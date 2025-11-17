@@ -1,13 +1,23 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React from 'react';
+import { useAuth } from '../context/AuthContext';
 import { HomeScreen } from '../screens/CommonScreens/ComonHomeScreen';
 import { NotificationsScreen } from '../screens/CustomerScreens/NotificationsScreen';
+import ProfileScreen from '../screens/CustomerScreens/ProfileScreen/ProfileScreen';
 import AuthStackNavigator from './AuthStackNavigator';
 
 const Tab = createBottomTabNavigator();
 
 const ORANGE = '#FF6A00';
+
+const ProfileTab = () => {
+  const { isAuthenticated } = useAuth();
+  if (isAuthenticated) {
+    return <ProfileScreen key="profile-auth" />;
+  }
+  return <AuthStackNavigator key="profile-guest" />;
+};
 
 export default function BottomTabNavigator() {
   return (
@@ -52,7 +62,7 @@ export default function BottomTabNavigator() {
       />
       <Tab.Screen
         name="Profile"
-        component={AuthStackNavigator}
+        component={ProfileTab}
         options={{
           tabBarLabel: 'Tôi',
           tabBarIcon: ({ color, size }) => (
