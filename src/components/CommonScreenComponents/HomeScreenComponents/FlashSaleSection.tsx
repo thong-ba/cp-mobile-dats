@@ -8,17 +8,23 @@ type Product = {
   id: string;
   name: string;
   price: number;
+  priceRange?: { min: number; max: number } | null;
   image: string;
 };
 
 type Props = {
   products: Product[];
   endsInMs?: number; // countdown duration in ms
+  onPressItem?: (product: Product) => void;
 };
 
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 
-const FlashSaleSection: React.FC<Props> = ({ products, endsInMs = 3 * 60 * 60 * 1000 }) => {
+const FlashSaleSection: React.FC<Props> = ({
+  products,
+  endsInMs = 3 * 60 * 60 * 1000,
+  onPressItem,
+}) => {
   const [remaining, setRemaining] = useState<number>(endsInMs);
 
   useEffect(() => {
@@ -53,10 +59,18 @@ const FlashSaleSection: React.FC<Props> = ({ products, endsInMs = 3 * 60 * 60 * 
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 12, gap: 12 }}
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.card} activeOpacity={0.9}>
+          <TouchableOpacity
+            style={styles.card}
+            activeOpacity={0.9}
+            onPress={() => onPressItem && onPressItem(item)}
+          >
             <Image source={{ uri: item.image }} style={styles.image} />
             <Text numberOfLines={1} style={styles.name}>{item.name}</Text>
-            <Text style={styles.price}>{new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}</Text>
+            <Text style={styles.price}>
+              {item.priceRange
+                ? `${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.min)} - ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.max)}`
+                : new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}
+            </Text>
           </TouchableOpacity>
         )}
       />

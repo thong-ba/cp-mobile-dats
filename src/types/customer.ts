@@ -23,3 +23,51 @@ export type CustomerProfile = {
   preferredCategory: string | null;
 };
 
+export type CustomerAddress = {
+  id: string;
+  customerId: string;
+  receiverName: string;
+  phoneNumber: string;
+  label: string;
+  country: string;
+  province: string;
+  district: string;
+  ward: string;
+  street: string;
+  addressLine: string;
+  postalCode: string;
+  note: string | null;
+  provinceCode: string;
+  districtId: number;
+  wardCode: string;
+  lat: string | null;
+  lng: string | null;
+  default: boolean;
+};
+
+export type CreateCustomerAddressPayload = {
+  receiverName: string;
+  phoneNumber: string;
+  label: string;
+  country: string;
+  province: string;
+  district: string;
+  ward: string;
+  street: string;
+  addressLine: string;
+  postalCode: string;
+  note: string | null;
+  provinceCode: string;
+  districtId: number;
+  wardCode: string;
+  lat: string | null;
+  lng: string | null;
+  isDefault: boolean;
+};
+
+export type CreateCustomerAddressResponse = {
+  status: number;
+  message: string;
+  data: CustomerAddress;
+};
+

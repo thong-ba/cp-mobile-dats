@@ -1,4 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -22,6 +23,7 @@ const SearchBar: React.FC<Props> = ({
   onSubmitEditing,
   isLoading = false,
 }) => {
+  const navigation = useNavigation();
   const suggestions = useMemo(
     () => ['JBL Party 200', 'Sony Sonic', 'LG King', 'Sony WH-1000XM5', 
         'JBL Flip 6', 'Shure MV7', 'Sony SRS-XB', 'Sony SRS-XB1000', 
@@ -55,7 +57,14 @@ const SearchBar: React.FC<Props> = ({
             <MaterialCommunityIcons name="camera-outline" size={22} color={COLORS.gray} />
           </TouchableOpacity> */}
         </View>
-        <TouchableOpacity style={styles.actionIcon} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={styles.actionIcon}
+          activeOpacity={0.8}
+          onPress={() => {
+            // @ts-ignore - navigate to Cart
+            navigation.navigate('Cart');
+          }}
+        >
           {isLoading ? (
             <ActivityIndicator size="small" color="#FF6A00" />
           ) : (

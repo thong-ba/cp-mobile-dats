@@ -193,7 +193,11 @@ const ProfileScreen = () => {
                   title={item.label}
                   left={(props) => <List.Icon {...props} icon={item.icon as any} />}
                   right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                  onPress={() => {}}
+                  onPress={() => {
+                    if (item.key === 'address') {
+                      navigation.navigate('AddressList' as never);
+                    }
+                  }}
                 />
                 <Divider />
               </React.Fragment>

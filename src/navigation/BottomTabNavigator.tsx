@@ -2,10 +2,10 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { HomeScreen } from '../screens/CommonScreens/ComonHomeScreen';
 import { NotificationsScreen } from '../screens/CustomerScreens/NotificationsScreen';
-import ProfileScreen from '../screens/CustomerScreens/ProfileScreen/ProfileScreen';
 import AuthStackNavigator from './AuthStackNavigator';
+import CustomerStackNavigator from './CustomerStackNavigator';
+import ProductStackNavigator from './ProductStackNavigator';
 
 const Tab = createBottomTabNavigator();
 
@@ -14,7 +14,7 @@ const ORANGE = '#FF6A00';
 const ProfileTab = () => {
   const { isAuthenticated } = useAuth();
   if (isAuthenticated) {
-    return <ProfileScreen key="profile-auth" />;
+    return <CustomerStackNavigator key="profile-auth" />;
   }
   return <AuthStackNavigator key="profile-guest" />;
 };
@@ -42,7 +42,7 @@ export default function BottomTabNavigator() {
     >
       <Tab.Screen
         name="Home"
-        component={HomeScreen}
+        component={ProductStackNavigator}
         options={{
           tabBarLabel: 'Trang chủ',
           tabBarIcon: ({ color, size }) => (

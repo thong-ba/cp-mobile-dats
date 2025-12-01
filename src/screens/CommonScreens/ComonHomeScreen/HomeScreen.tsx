@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -78,6 +79,7 @@ const PAGE_SIZE = 20;
 const DEFAULT_STATUS: ProductStatus = 'ACTIVE';
 
 const HomeScreen = () => {
+  const navigation = useNavigation();
   const [searchInput, setSearchInput] = useState('');
   const [appliedKeyword, setAppliedKeyword] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -98,9 +100,9 @@ const HomeScreen = () => {
         const response = await fetchProducts({
           keyword: appliedKeyword || undefined,
           categoryName: selectedCategory || undefined,
-          status: DEFAULT_STATUS,
           page: 0,
           size: PAGE_SIZE,
+          status: DEFAULT_STATUS,
         });
         setProducts(response.data ?? []);
       } catch (error) {
@@ -130,17 +132,34 @@ const HomeScreen = () => {
 
   const productCards = useMemo(
     () =>
-      products.map((product) => ({
-        id: product.productId,
-        name: product.name,
-        price:
-          product.finalPrice ??
-          product.priceAfterPromotion ??
-          product.price ??
-          0,
-        image: product.images?.[0] ?? FALLBACK_IMAGE,
-        rating: product.ratingAverage ?? 4.5,
-      })),
+      products.map((product) => {
+        // Calculate price from variants if available
+        let price = 0;
+        let priceRange: { min: number; max: number } | null = null;
+
+        if (product.variants && product.variants.length > 0) {
+          const variantPrices = product.variants.map((v) => v.variantPrice);
+          const minPrice = Math.min(...variantPrices);
+          const maxPrice = Math.max(...variantPrices);
+          priceRange = { min: minPrice, max: maxPrice };
+          price = minPrice; // Use min price as default for sorting/display
+        } else {
+          price =
+            product.finalPrice ??
+            product.priceAfterPromotion ??
+            product.price ??
+            0;
+        }
+
+        return {
+          id: product.productId,
+          name: product.name,
+          price,
+          priceRange,
+          image: product.images?.[0] ?? FALLBACK_IMAGE,
+          rating: product.ratingAverage ?? 4.5,
+        };
+      }),
     [products],
   );
 
@@ -214,9 +233,27 @@ const HomeScreen = () => {
         ) : (
           <>
             <BannerCarousel banners={bannerImages} />
-            <FlashSaleSection products={flashSaleProducts} />
-            <PopularSection products={popularProducts} />
-            <ProductGrid products={productCards} />
+            <FlashSaleSection
+              products={flashSaleProducts}
+              onPressItem={(product) => {
+                // @ts-ignore - navigate to ProductDetail in ProductStack
+                navigation.navigate('ProductDetail', { productId: product.id });
+              }}
+            />
+            <PopularSection
+              products={popularProducts}
+              onPressItem={(product) => {
+                // @ts-ignore - navigate to ProductDetail in ProductStack
+                navigation.navigate('ProductDetail', { productId: product.id });
+              }}
+            />
+            <ProductGrid
+              products={productCards}
+              onPressItem={(product) => {
+                // @ts-ignore - navigate to ProductDetail in ProductStack
+                navigation.navigate('ProductDetail', { productId: product.id });
+              }}
+            />
             <RatingSection items={ratingItems} />
           </>
         )}

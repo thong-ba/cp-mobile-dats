@@ -8,6 +8,7 @@ type Product = {
   id: string;
   name: string;
   price: number;
+  priceRange?: { min: number; max: number } | null;
   image: string;
 };
 
@@ -15,6 +16,7 @@ type Props = {
   title?: string;
   products: Product[];
   onPressItem?: (product: Product) => void;
+  navigation?: any;
 };
 
 const formatCurrencyVND = (value: number) =>
@@ -49,7 +51,11 @@ const ProductGrid: React.FC<Props> = ({ title = 'Sản phẩm nổi bật', prod
               <Text numberOfLines={2} style={styles.cardTitle}>
                 {item.name}
               </Text>
-              <Text style={styles.cardPrice}>{formatCurrencyVND(item.price)}</Text>
+              <Text style={styles.cardPrice}>
+                {item.priceRange
+                  ? `${formatCurrencyVND(item.priceRange.min)} - ${formatCurrencyVND(item.priceRange.max)}`
+                  : formatCurrencyVND(item.price)}
+              </Text>
             </View>
           </TouchableOpacity>
         )}

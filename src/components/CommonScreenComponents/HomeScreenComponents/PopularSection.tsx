@@ -8,14 +8,16 @@ type Product = {
   id: string;
   name: string;
   price: number;
+  priceRange?: { min: number; max: number } | null;
   image: string;
 };
 
 type Props = {
   products: Product[];
+  onPressItem?: (product: Product) => void;
 };
 
-const PopularSection: React.FC<Props> = ({ products }) => {
+const PopularSection: React.FC<Props> = ({ products, onPressItem }) => {
   return (
     <View style={{ marginTop: 8 }}>
       <View style={styles.headerRow}>
@@ -29,11 +31,19 @@ const PopularSection: React.FC<Props> = ({ products }) => {
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 12, gap: 12 }}
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.card} activeOpacity={0.9}>
+          <TouchableOpacity
+            style={styles.card}
+            activeOpacity={0.9}
+            onPress={() => onPressItem && onPressItem(item)}
+          >
             <Image source={{ uri: item.image }} style={styles.image} />
             <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
               <Text numberOfLines={2} style={styles.name}>{item.name}</Text>
-              <Text style={styles.price}>{new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}</Text>
+              <Text style={styles.price}>
+                {item.priceRange
+                  ? `${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.min)} - ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.max)}`
+                  : new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}
+              </Text>
             </View>
           </TouchableOpacity>
         )}

@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
@@ -11,6 +12,7 @@ type LoginFormProps = {
 export default function LoginForm({ onSubmit, hideTitle, isSubmitting, errorMessage }: LoginFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = () => {
     if (isSubmitting) {
@@ -40,17 +42,32 @@ export default function LoginForm({ onSubmit, hideTitle, isSubmitting, errorMess
 
       <View style={styles.field}>
         <Text style={styles.label}>Mật khẩu</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="••••••••"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          returnKeyType="done"
-          editable={!isSubmitting}
-          onSubmitEditing={handleSubmit}
-        />
+        <View style={styles.passwordContainer}>
+          <TextInput
+            style={[styles.input, styles.passwordInput]}
+            // Không hiển thị placeholder dấu chấm khi trống
+            placeholder=""
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry={!showPassword}
+            autoCapitalize="none"
+            returnKeyType="done"
+            editable={!isSubmitting}
+            onSubmitEditing={handleSubmit}
+          />
+          <TouchableOpacity
+            style={styles.eyeIcon}
+            activeOpacity={0.7}
+            onPress={() => setShowPassword((prev) => !prev)}
+            disabled={isSubmitting}
+          >
+            <MaterialCommunityIcons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color="#777"
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <TouchableOpacity
@@ -118,6 +135,28 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  passwordContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    paddingLeft: 14,
+    paddingRight: 8,
+    height: 48,
+  },
+  passwordInput: {
+    flex: 1,
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    height: '100%',
+  },
+  eyeIcon: {
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 
