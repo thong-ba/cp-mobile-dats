@@ -15,39 +15,41 @@ export default function LoginScreen() {
   const [successVisible, setSuccessVisible] = useState(false);
   const successTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleSubmit = useCallback(async ({ email, password }: LoginRequest) => {
-    setIsSubmitting(true);
-    setErrorMessage(null);
-    try {
-      await login({ email, password });
-      console.log('[LoginScreen] login succeeded');
-      setSuccessVisible(true);
-      if (successTimerRef.current) {
-        clearTimeout(successTimerRef.current);
-      }
-      successTimerRef.current = setTimeout(() => {
-        setSuccessVisible(false);
-        const tabNavigator = navigation.getParent();
-        tabNavigator?.navigate('Home' as never);
-      }, 3000);
-    } catch (error: unknown) {
-      console.log('[LoginScreen] login failed', error);
-      let message = 'Không thể đăng nhập. Vui lòng thử lại.';
-      if (typeof error === 'object' && error !== null) {
-        const maybeMessage = (error as { message?: string }).message;
-        if (maybeMessage) {
-          message = maybeMessage;
+  const handleSubmit = useCallback(
+    async ({ email, password }: LoginRequest) => {
+      setIsSubmitting(true);
+      setErrorMessage(null);
+      try {
+        await login({ email, password });
+        console.log('[LoginScreen] login succeeded');
+        setSuccessVisible(true);
+        if (successTimerRef.current) {
+          clearTimeout(successTimerRef.current);
         }
-        const axiosResponseMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-        if (axiosResponseMessage) {
-          message = axiosResponseMessage;
+        successTimerRef.current = setTimeout(() => {
+          setSuccessVisible(false);
+          const tabNavigator = navigation.getParent();
+          tabNavigator?.navigate('Home' as never);
+        }, 2000);
+      } catch (error: unknown) {
+        console.log('[LoginScreen] login failed', error);
+        let message = 'Không thể đăng nhập. Vui lòng thử lại.';
+        if (typeof error === 'object' && error !== null) {
+          const axiosResponseMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+          const genericMessage = (error as { message?: string }).message;
+          if (axiosResponseMessage) {
+            message = axiosResponseMessage;
+          } else if (genericMessage) {
+            message = genericMessage;
+          }
         }
+        setErrorMessage(message);
+      } finally {
+        setIsSubmitting(false);
       }
-      setErrorMessage(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, []);
+    },
+    [login, navigation],
+  );
 
   useEffect(() => {
     return () => {

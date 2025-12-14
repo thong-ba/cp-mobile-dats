@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { loginCustomer } from '../services/authService';
 import { getCustomerById } from '../services/customerService';
 import { DecodedToken, LoginRequest, LoginResponse } from '../types/auth';
@@ -21,6 +21,13 @@ const initialState: AuthState = {
   customerProfile: null,
 };
 
+const STORAGE_KEYS = {
+  accessToken: 'CUSTOMER_token',
+  refreshToken: 'CUSTOMER_refresh_token',
+  user: 'customer_user',
+  decoded: 'customer_decoded',
+};
+
 type AuthContextValue = {
   authState: AuthState;
   isAuthenticated: boolean;
@@ -30,8 +37,89 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+const AsyncStorage: any =
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('@react-native-async-storage/async-storage').default;
+
+const persistAuthState = async (state: AuthState) => {
+  await AsyncStorage.multiSet([
+    [STORAGE_KEYS.accessToken, state.accessToken ?? ''],
+    [STORAGE_KEYS.refreshToken, state.refreshToken ?? ''],
+    [STORAGE_KEYS.user, state.user ? JSON.stringify(state.user) : ''],
+    [STORAGE_KEYS.decoded, state.decodedToken ? JSON.stringify(state.decodedToken) : ''],
+  ]);
+};
+
+const clearPersistedAuthState = async () => {
+  await AsyncStorage.multiRemove([
+    STORAGE_KEYS.accessToken,
+    STORAGE_KEYS.refreshToken,
+    STORAGE_KEYS.user,
+    STORAGE_KEYS.decoded,
+  ]);
+};
+
+const readPersistedAuthState = async (): Promise<AuthState> => {
+  const entries = await AsyncStorage.multiGet([
+    STORAGE_KEYS.accessToken,
+    STORAGE_KEYS.refreshToken,
+    STORAGE_KEYS.user,
+    STORAGE_KEYS.decoded,
+  ]);
+  const map = Object.fromEntries(entries);
+  return {
+    accessToken: map[STORAGE_KEYS.accessToken] || null,
+    refreshToken: map[STORAGE_KEYS.refreshToken] || null,
+    user: map[STORAGE_KEYS.user] ? JSON.parse(map[STORAGE_KEYS.user]) : null,
+    decodedToken: map[STORAGE_KEYS.decoded] ? JSON.parse(map[STORAGE_KEYS.decoded]) : null,
+    customerProfile: null,
+  };
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [authState, setAuthState] = useState<AuthState>(initialState);
+  const [isHydrating, setIsHydrating] = useState(true);
+
+  useEffect(() => {
+    const hydrate = async () => {
+      try {
+        const persisted = await readPersistedAuthState();
+        if (persisted.accessToken) {
+          let decoded: DecodedToken | null = null;
+          try {
+            decoded = persisted.decodedToken ?? decodeJwt(persisted.accessToken);
+          } catch (err) {
+            console.warn('[AuthContext] decode persisted token failed', err);
+          }
+
+          let customerProfile: CustomerProfile | null = null;
+          if (decoded?.customerId && persisted.accessToken) {
+            try {
+              customerProfile = await getCustomerById({
+                customerId: decoded.customerId,
+                accessToken: persisted.accessToken,
+              });
+            } catch (err) {
+              console.warn('[AuthContext] load profile failed', err);
+            }
+          }
+
+          setAuthState({
+            accessToken: persisted.accessToken,
+            refreshToken: persisted.refreshToken,
+            user: persisted.user,
+            decodedToken: decoded,
+            customerProfile,
+          });
+        }
+      } catch (err) {
+        console.warn('[AuthContext] hydrate error', err);
+      } finally {
+        setIsHydrating(false);
+      }
+    };
+    hydrate();
+  }, []);
 
   const login = async (payload: LoginRequest) => {
     const response = await loginCustomer(payload);
@@ -54,6 +142,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       customerProfile,
     });
 
+    await persistAuthState({
+      accessToken,
+      refreshToken,
+      user,
+      decodedToken: decoded,
+      customerProfile,
+    });
+
     console.log('[AuthContext] login success for user:', user.email);
 
     return response.data;
@@ -61,17 +157,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     setAuthState(initialState);
+    await clearPersistedAuthState();
     console.log('[AuthContext] logout success');
   };
 
   const value = useMemo<AuthContextValue>(
     () => ({
       authState,
-      isAuthenticated: Boolean(authState.accessToken && authState.decodedToken),
+      isAuthenticated: Boolean(authState.accessToken && authState.decodedToken) && !isHydrating,
       login,
       logout,
     }),
-    [authState],
+    [authState, isHydrating],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

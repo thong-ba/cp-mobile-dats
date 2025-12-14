@@ -5,6 +5,7 @@ import {
   ProductListResponse,
   ProductQueryParams,
   ProductStatus,
+  ProductVouchersResponse,
 } from '../types/product';
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -49,6 +50,19 @@ export const fetchProducts = async (
  */
 export const getProductById = async (productId: string): Promise<ProductDetail> => {
   const { data } = await httpClient.get<ProductDetailResponse>(`/products/${productId}`);
+  return data.data;
+};
+
+/**
+ * GET /api/products/view/{productId}/vouchers
+ * Lấy voucher platform/shop của sản phẩm
+ */
+export const getProductVouchers = async (
+  productId: string,
+): Promise<ProductVouchersResponse['data']> => {
+  const { data } = await httpClient.get<ProductVouchersResponse>(
+    `/products/view/${productId}/vouchers`,
+  );
   return data.data;
 };
 

@@ -2,24 +2,24 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Animated,
-    Dimensions,
-    Image,
-    Modal,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Animated,
+  Dimensions,
+  Image,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { Chip, Snackbar } from 'react-native-paper';
 import { useAuth } from '../../../context/AuthContext';
 import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
 import { addItemsToCart } from '../../../services/cartService';
-import { getProductById } from '../../../services/productService';
-import { ProductDetail } from '../../../types/product';
+import { getProductById, getProductVouchers } from '../../../services/productService';
+import { PlatformCampaign, PlatformVoucherItem, ProductDetail } from '../../../types/product';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF6A00';
@@ -36,6 +36,7 @@ const ProductDetailScreen: React.FC = () => {
 
   const { authState } = useAuth();
   const [product, setProduct] = useState<ProductDetail | null>(null);
+  const [platformCampaigns, setPlatformCampaigns] = useState<PlatformCampaign[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -67,8 +68,12 @@ const ProductDetailScreen: React.FC = () => {
         setIsLoading(true);
       }
       setErrorMessage(null);
-      const data = await getProductById(productId);
-      setProduct(data);
+      const [detailData, voucherData] = await Promise.all([
+        getProductById(productId),
+        getProductVouchers(productId).catch(() => null),
+      ]);
+      setProduct(detailData);
+      setPlatformCampaigns(voucherData?.vouchers?.platform ?? []);
     } catch (error: any) {
       console.error('[ProductDetailScreen] loadProduct failed', error);
       const message =
@@ -250,8 +255,117 @@ const ProductDetailScreen: React.FC = () => {
   }
 
   const mainImage = product.images?.[selectedImageIndex] || product.images?.[0] || '';
-  const displayPrice = product.finalPrice ?? product.priceAfterPromotion ?? product.price ?? 0;
-  const originalPrice = product.price;
+
+  // Pricing logic with platform/flash sale vouchers
+  const computePricing = () => {
+    // base prices from variants or product
+    const variantPrices =
+      product.variants?.map((v) => v.variantPrice ?? 0).filter((p) => p > 0) ?? [];
+    let basePrices: number[] = [];
+    if (product.variants && product.variants.length > 0) {
+      if (selectedVariantId) {
+        const selected = product.variants.find((v) => v.variantId === selectedVariantId);
+        if (selected) {
+          basePrices = [selected.variantPrice ?? 0];
+        }
+      }
+      if (basePrices.length === 0) {
+        basePrices = variantPrices.length > 0 ? variantPrices : [0];
+      }
+    } else {
+      basePrices = [
+        product.price ??
+          product.finalPrice ??
+          product.priceAfterPromotion ??
+          product.discountPrice ??
+          0,
+      ];
+    }
+
+    // pick active campaign + voucher
+    const now = new Date();
+    const isActiveCampaign = (c?: PlatformCampaign | null) => {
+      if (!c) return false;
+      const hasSlot = c.vouchers?.[0]?.slotOpenTime && c.vouchers?.[0]?.slotCloseTime;
+      if (hasSlot) {
+        const slotOpen = c.vouchers?.[0]?.slotOpenTime ? new Date(c.vouchers[0].slotOpenTime!) : null;
+        const slotClose = c.vouchers?.[0]?.slotCloseTime ? new Date(c.vouchers[0].slotCloseTime!) : null;
+        const slotStatus = c.vouchers?.[0]?.slotStatus;
+        if (slotOpen && slotClose && slotStatus === 'ACTIVE') {
+          return slotOpen <= now && now <= slotClose;
+        }
+      }
+      const start = c.startTime ? new Date(c.startTime) : null;
+      const end = c.endTime ? new Date(c.endTime) : null;
+      const campaignActive = c.status === 'ACTIVE' && (!start || start <= now) && (!end || end >= now);
+      return campaignActive;
+    };
+
+    const isActiveVoucher = (v?: PlatformVoucherItem | null) => {
+      if (!v) return false;
+      const start = v.startTime ? new Date(v.startTime) : null;
+      const end = v.endTime ? new Date(v.endTime) : null;
+      const voucherActive = (v.status === 'ACTIVE' || !v.status) && (!start || start <= now) && (!end || end >= now);
+      const hasSlot = v.slotOpenTime && v.slotCloseTime;
+      if (hasSlot) {
+        const slotOpen = v.slotOpenTime ? new Date(v.slotOpenTime) : null;
+        const slotClose = v.slotCloseTime ? new Date(v.slotCloseTime) : null;
+        const slotActive = v.slotStatus === 'ACTIVE' && (!slotOpen || slotOpen <= now) && (!slotClose || slotClose >= now);
+        return voucherActive && slotActive;
+      }
+      return voucherActive;
+    };
+
+    const activeCampaign = platformCampaigns.find((c) => isActiveCampaign(c));
+    const activeVoucher = activeCampaign?.vouchers?.find((v) => isActiveVoucher(v));
+
+    const applyVoucher = (price: number) => {
+      if (!activeVoucher || price <= 0) return price;
+      if (activeVoucher.type === 'PERCENT' && activeVoucher.discountPercent) {
+        const discountValue = (price * activeVoucher.discountPercent) / 100;
+        const capped =
+          activeVoucher.maxDiscountValue !== null && activeVoucher.maxDiscountValue !== undefined
+            ? Math.min(discountValue, activeVoucher.maxDiscountValue)
+            : discountValue;
+        return Math.max(0, price - capped);
+      }
+      if (activeVoucher.type === 'FIXED' && activeVoucher.discountValue) {
+        return Math.max(0, price - activeVoucher.discountValue);
+      }
+      return price;
+    };
+
+    const discountedPrices = basePrices.map(applyVoucher);
+    const originalRange =
+      basePrices.length > 1
+        ? { min: Math.min(...basePrices), max: Math.max(...basePrices) }
+        : null;
+    const discountedRange =
+      discountedPrices.length > 1
+        ? { min: Math.min(...discountedPrices), max: Math.max(...discountedPrices) }
+        : null;
+
+    const displayPrice = discountedPrices[0] ?? 0;
+    const originalPrice = basePrices[0] ?? 0;
+    const hasDiscount = discountedPrices.some((p, idx) => p < (basePrices[idx] ?? p));
+
+    return {
+      displayPrice,
+      originalPrice,
+      hasDiscount,
+      originalRange,
+      discountedRange,
+      badge: activeCampaign
+        ? {
+            label: activeCampaign.badgeLabel,
+            color: activeCampaign.badgeColor,
+            iconUrl: activeCampaign.badgeIconUrl,
+          }
+        : null,
+    };
+  };
+
+  const pricing = computePricing();
 
   return (
     <View style={styles.container}>
@@ -336,15 +450,31 @@ const ProductDetailScreen: React.FC = () => {
           )}
 
           <View style={styles.priceRow}>
-            <Text style={styles.finalPrice}>{formatCurrencyVND(displayPrice)}</Text>
-            {originalPrice && originalPrice > displayPrice && (
-              <Text style={styles.originalPrice}>{formatCurrencyVND(originalPrice)}</Text>
+            <Text style={styles.finalPrice}>
+              {pricing.discountedRange
+                ? `${formatCurrencyVND(pricing.discountedRange.min)} - ${formatCurrencyVND(
+                    pricing.discountedRange.max,
+                  )}`
+                : formatCurrencyVND(pricing.displayPrice)}
+            </Text>
+            {pricing.hasDiscount && (
+              <Text style={styles.originalPrice}>
+                {pricing.originalRange
+                  ? `${formatCurrencyVND(pricing.originalRange.min)} - ${formatCurrencyVND(
+                      pricing.originalRange.max,
+                    )}`
+                  : formatCurrencyVND(pricing.originalPrice)}
+              </Text>
             )}
-            {product.promotionPercent && (
-              <Chip compact style={styles.discountChip}>
-                -{product.promotionPercent}%
+            {pricing.badge?.label ? (
+              <Chip
+                compact
+                style={[styles.discountChip, pricing.badge.color ? { backgroundColor: pricing.badge.color } : null]}
+                textStyle={{ color: '#FFF', fontWeight: '700' }}
+              >
+                {pricing.badge.label || 'Giảm giá'}
               </Chip>
-            )}
+            ) : null}
           </View>
 
           {/* Rating & Reviews */}

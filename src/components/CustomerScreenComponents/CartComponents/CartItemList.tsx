@@ -8,12 +8,22 @@ const ORANGE = '#FF6A00';
 type Props = {
   items: CartItem[];
   onCartChange?: () => void;
+  onRemoveItem?: (cartItemId: string) => void;
 };
 
 const formatCurrencyVND = (value: number) =>
   new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(value);
 
-const CartItemList: React.FC<Props> = ({ items, onCartChange }) => {
+const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem }) => {
+  const getPriceDisplay = (item: CartItem) => {
+    const originalPrice = item.baseUnitPrice ?? item.unitPrice;
+    const hasPlatformPrice =
+      item.platformCampaignPrice !== null && item.platformCampaignPrice !== undefined;
+    const priceDisplay = hasPlatformPrice ? item.platformCampaignPrice! : originalPrice;
+    const hasDiscount = hasPlatformPrice && priceDisplay < originalPrice;
+    return { priceDisplay, originalPrice, hasDiscount, hasPlatformPrice };
+  };
+
   const handleQuantityChange = (cartItemId: string, newQuantity: number) => {
     // TODO: Implement update cart item quantity API
     console.log('Update quantity', cartItemId, newQuantity);
@@ -21,9 +31,12 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange }) => {
   };
 
   const handleRemoveItem = (cartItemId: string) => {
-    // TODO: Implement remove cart item API
-    console.log('Remove item', cartItemId);
-    onCartChange?.();
+    if (onRemoveItem) {
+      onRemoveItem(cartItemId);
+    } else {
+      console.log('Remove item', cartItemId);
+      onCartChange?.();
+    }
   };
 
   return (
@@ -40,7 +53,32 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange }) => {
                 {item.variantOptionName}: {item.variantOptionValue}
               </Text>
             )}
-            <Text style={styles.itemPrice}>{formatCurrencyVND(item.unitPrice)}</Text>
+            {(() => {
+              const { priceDisplay, originalPrice, hasDiscount, hasPlatformPrice } =
+                getPriceDisplay(item);
+              return (
+                <View style={styles.priceBlock}>
+                  <Text style={[styles.itemPrice, hasDiscount && styles.discountPrice]}>
+                    {formatCurrencyVND(priceDisplay)}
+                  </Text>
+                  {hasDiscount ? (
+                    <Text style={styles.originalPrice}>{formatCurrencyVND(originalPrice)}</Text>
+                  ) : null}
+                  {item.inPlatformCampaign && hasPlatformPrice ? (
+                    <View
+                      style={[
+                        styles.badge,
+                        item.campaignUsageExceeded ? styles.badgeExpired : null,
+                      ]}
+                    >
+                      <Text style={styles.badgeText}>
+                        {item.campaignUsageExceeded ? 'Hết suất' : 'Campaign'}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })()}
 
             <View style={styles.quantityRow}>
               <View style={styles.quantityControls}>
@@ -76,7 +114,13 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange }) => {
             </View>
             <View style={styles.lineTotalRow}>
               <Text style={styles.lineTotalLabel}>Thành tiền:</Text>
-              <Text style={styles.lineTotalValue}>{formatCurrencyVND(item.lineTotal)}</Text>
+              <Text style={styles.lineTotalValue}>
+                {formatCurrencyVND(
+                  (item.inPlatformCampaign
+                    ? item.platformCampaignPrice ?? item.unitPrice
+                    : item.baseUnitPrice ?? item.unitPrice) * item.quantity,
+                )}
+              </Text>
             </View>
           </View>
         </View>
@@ -127,6 +171,35 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: ORANGE,
     fontWeight: '700',
+  },
+  discountPrice: {
+    color: '#D32F2F',
+  },
+  originalPrice: {
+    marginTop: 2,
+    fontSize: 12,
+    color: '#888',
+    textDecorationLine: 'line-through',
+  },
+  priceBlock: {
+    marginTop: 4,
+    gap: 2,
+  },
+  badge: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    backgroundColor: '#FF7043',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  badgeText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  badgeExpired: {
+    backgroundColor: '#9E9E9E',
   },
   quantityRow: {
     flexDirection: 'row',

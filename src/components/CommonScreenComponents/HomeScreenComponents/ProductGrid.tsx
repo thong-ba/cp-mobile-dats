@@ -7,8 +7,10 @@ const ORANGE = '#FF6A00';
 type Product = {
   id: string;
   name: string;
-  price: number;
+  price: number; // discounted price if hasDiscount, otherwise original
   priceRange?: { min: number; max: number } | null;
+  originalPrice?: number;
+  hasDiscount?: boolean;
   image: string;
 };
 
@@ -51,11 +53,16 @@ const ProductGrid: React.FC<Props> = ({ title = 'Sản phẩm nổi bật', prod
               <Text numberOfLines={2} style={styles.cardTitle}>
                 {item.name}
               </Text>
-              <Text style={styles.cardPrice}>
-                {item.priceRange
-                  ? `${formatCurrencyVND(item.priceRange.min)} - ${formatCurrencyVND(item.priceRange.max)}`
-                  : formatCurrencyVND(item.price)}
-              </Text>
+              <View style={styles.priceRow}>
+                <Text style={[styles.cardPrice, item.hasDiscount && styles.cardPriceDiscount]}>
+                  {item.priceRange
+                    ? `${formatCurrencyVND(item.priceRange.min)} - ${formatCurrencyVND(item.priceRange.max)}`
+                    : formatCurrencyVND(item.price)}
+                </Text>
+                {item.hasDiscount && item.originalPrice ? (
+                  <Text style={styles.cardPriceOriginal}>{formatCurrencyVND(item.originalPrice)}</Text>
+                ) : null}
+              </View>
             </View>
           </TouchableOpacity>
         )}
@@ -109,6 +116,18 @@ const styles = StyleSheet.create({
     marginTop: 6,
     color: ORANGE,
     fontWeight: '700',
+  },
+  cardPriceDiscount: {
+    color: '#D32F2F',
+  },
+  cardPriceOriginal: {
+    marginTop: 2,
+    color: '#888',
+    textDecorationLine: 'line-through',
+    fontSize: 12,
+  },
+  priceRow: {
+    marginTop: 6,
   },
 });
 

@@ -7,7 +7,12 @@ export type CartItem = {
   name: string;
   image: string;
   quantity: number;
-  unitPrice: number;
+  unitPrice: number; // current unit price after campaign/voucher if any
+  baseUnitPrice?: number | null; // original price before platform campaign
+  platformCampaignPrice?: number | null; // price after platform campaign (if provided)
+  inPlatformCampaign?: boolean;
+  campaignUsageExceeded?: boolean;
+  campaignRemaining?: number | null;
   lineTotal: number;
   originProvinceCode: string;
   originDistrictCode: string;

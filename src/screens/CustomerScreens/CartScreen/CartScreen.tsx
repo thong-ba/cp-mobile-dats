@@ -2,18 +2,18 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { Button } from 'react-native-paper';
 import { CartItemList } from '../../../components/CustomerScreenComponents/CartComponents';
 import { useAuth } from '../../../context/AuthContext';
-import { getCustomerCart } from '../../../services/cartService';
+import { deleteCartItems, getCustomerCart } from '../../../services/cartService';
 import { Cart } from '../../../types/cart';
 
 const ORANGE = '#FF6A00';
@@ -83,6 +83,33 @@ const CartScreen: React.FC = () => {
     [authState.accessToken, authState.decodedToken?.customerId],
   );
 
+  const handleRemoveItem = useCallback(
+    async (cartItemId: string) => {
+      const customerId = authState.decodedToken?.customerId;
+      const accessToken = authState.accessToken;
+      if (!customerId || !accessToken) return;
+      try {
+        setIsLoading(true);
+        await deleteCartItems({
+          customerId,
+          accessToken,
+          cartItemIds: [cartItemId],
+        });
+        await loadCart(true);
+      } catch (error: any) {
+        console.error('[CartScreen] delete item failed', error);
+        const message =
+          error?.response?.status === 401
+            ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+            : error?.response?.data?.message || 'Không thể xóa sản phẩm. Vui lòng thử lại.';
+        setErrorMessage(message);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [authState.accessToken, authState.decodedToken?.customerId],
+  );
+
   useFocusEffect(
     useCallback(() => {
       // Only load cart if user is authenticated
@@ -91,6 +118,15 @@ const CartScreen: React.FC = () => {
       }
     }, [loadCart, isAuthenticated]),
   );
+
+  // Poll cart every 10s when authenticated
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const id = setInterval(() => {
+      loadCart(true);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [isAuthenticated, loadCart]);
 
   // Show login required message if not authenticated
   if (!isAuthenticated) {
@@ -186,6 +222,22 @@ const CartScreen: React.FC = () => {
     );
   }
 
+  // Derived totals (backend already includes platform discounts in unitPrice/lineTotal)
+  const subtotalBeforePlatform = cart.items.reduce((sum, item) => {
+    const base = item.baseUnitPrice ?? item.unitPrice;
+    return sum + base * item.quantity;
+  }, 0);
+  const subtotalAfterPlatform = cart.items.reduce((sum, item) => {
+    const originalPrice = item.baseUnitPrice ?? item.unitPrice;
+    const hasPlatformPrice =
+      item.platformCampaignPrice !== null && item.platformCampaignPrice !== undefined;
+    const priceDisplay = hasPlatformPrice ? item.platformCampaignPrice! : originalPrice;
+    return sum + priceDisplay * item.quantity;
+  }, 0);
+  const platformDiscount = Math.max(0, subtotalBeforePlatform - subtotalAfterPlatform);
+  const otherDiscount = cart.discountTotal ?? 0; // voucher/khác từ backend nếu có
+  const total = Math.max(0, subtotalAfterPlatform - otherDiscount);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -205,15 +257,25 @@ const CartScreen: React.FC = () => {
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={() => loadCart(true)} />}
       >
-        <CartItemList items={cart.items} onCartChange={loadCart} />
+        <CartItemList items={cart.items} onCartChange={loadCart} onRemoveItem={handleRemoveItem} />
       </ScrollView>
 
       {/* Bottom Summary Bar */}
       <View style={styles.summaryBar}>
         <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>Tạm tính:</Text>
-          <Text style={styles.summaryValue}>{formatCurrencyVND(cart.subtotal)}</Text>
+          <Text style={styles.summaryLabel}>Tạm tính (giá gốc):</Text>
+          <Text style={styles.summaryValue}>
+            {formatCurrencyVND(subtotalBeforePlatform || cart.subtotal)}
+          </Text>
         </View>
+        {platformDiscount > 0 && (
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Giảm nền tảng:</Text>
+            <Text style={[styles.summaryValue, styles.discountValue]}>
+              -{formatCurrencyVND(platformDiscount)}
+            </Text>
+          </View>
+        )}
         {cart.discountTotal > 0 && (
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Giảm giá:</Text>
@@ -224,13 +286,13 @@ const CartScreen: React.FC = () => {
         )}
         <View style={[styles.summaryRow, styles.totalRow]}>
           <Text style={styles.totalLabel}>Tổng cộng:</Text>
-          <Text style={styles.totalValue}>{formatCurrencyVND(cart.grandTotal)}</Text>
+          <Text style={styles.totalValue}>{formatCurrencyVND(total)}</Text>
         </View>
         <Button
           mode="contained"
           onPress={() => {
-            // TODO: Navigate to checkout
-            console.log('Navigate to checkout');
+            // @ts-ignore
+            navigation.navigate('Checkout', { cart });
           }}
           style={styles.checkoutButton}
           contentStyle={styles.checkoutButtonContent}

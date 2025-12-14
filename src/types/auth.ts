@@ -3,6 +3,12 @@ export type LoginRequest = {
   password: string;
 };
 
+export type RegisterRequest = {
+  fullName: string;
+  email: string;
+  password: string;
+};
+
 export type LoginResponse = {
   status: number;
   message: string;
@@ -17,6 +23,12 @@ export type LoginResponse = {
     };
     staff: unknown;
   };
+};
+
+export type RegisterResponse = {
+  status: number;
+  message: string;
+  data?: unknown;
 };
 
 export type DecodedToken = {

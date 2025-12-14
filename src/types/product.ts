@@ -24,6 +24,53 @@ export type ProductResponseItem = {
   [key: string]: unknown;
 };
 
+export type PlatformVoucherItem = {
+  platformVoucherId?: string;
+  type?: 'PERCENT' | 'FIXED';
+  discountPercent?: number | null;
+  discountValue?: number | null;
+  maxDiscountValue?: number | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  status?: string | null;
+  slotOpenTime?: string | null;
+  slotCloseTime?: string | null;
+  slotStatus?: string | null;
+};
+
+export type PlatformCampaign = {
+  campaignId?: string;
+  campaignType?: string | null;
+  badgeLabel?: string | null;
+  badgeColor?: string | null;
+  badgeIconUrl?: string | null;
+  status?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  vouchers?: PlatformVoucherItem[];
+};
+
+export type ProductVouchersResponse = {
+  status: number;
+  message: string;
+  data: {
+    product: {
+      productId: string;
+      name: string;
+      price: number | null;
+      discountPrice: number | null;
+      finalPrice: number | null;
+      brandName?: string;
+      category?: string;
+      thumbnailUrl?: string;
+    };
+    vouchers: {
+      shop?: unknown[];
+      platform?: PlatformCampaign[];
+    };
+  };
+};
+
 export type ProductListResponse = {
   status: number;
   message: string;

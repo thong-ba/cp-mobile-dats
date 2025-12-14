@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import httpClient from '../../../api/httpClient';
 import {
   BannerCarousel,
   CategorySection,
@@ -18,75 +19,189 @@ import {
   ProductGrid,
   RatingSection,
 } from '../../../components/CommonScreenComponents/HomeScreenComponents';
-import { fetchProducts } from '../../../services/productService';
-import { ProductResponseItem, ProductStatus } from '../../../types/product';
-
-const API_CATEGORIES = [
-  {
-    id: 1,
-    name: 'Tai Nghe',
-    image: 'https://cdn.pixabay.com/photo/2017/03/12/13/41/headphones-2138288_1280.jpg',
-  },
-  {
-    id: 2,
-    name: 'Loa',
-    image: 'https://cdn.pixabay.com/photo/2018/02/04/15/47/speaker-3123245_1280.jpg',
-  },
-  {
-    id: 3,
-    name: 'Micro',
-    image: 'https://cdn.pixabay.com/photo/2016/11/29/06/18/microphone-1869398_1280.jpg',
-  },
-  {
-    id: 4,
-    name: 'DAC',
-    image: 'https://images.pexels.com/photos/812264/pexels-photo-812264.jpeg',
-  },
-  {
-    id: 5,
-    name: 'Mixer',
-    image: 'https://images.pexels.com/photos/164879/pexels-photo-164879.jpeg',
-  },
-  {
-    id: 6,
-    name: 'Amp',
-    image: 'https://images.pexels.com/photos/164745/pexels-photo-164745.jpeg',
-  },
-  {
-    id: 7,
-    name: 'Turntable',
-    image: 'https://images.pexels.com/photos/154147/pexels-photo-154147.jpeg',
-  },
-  {
-    id: 8,
-    name: 'Sound Card',
-    image: 'https://images.pexels.com/photos/3394666/pexels-photo-3394666.jpeg',
-  },
-  {
-    id: 9,
-    name: 'DJ Controller',
-    image: 'https://images.pexels.com/photos/164745/pexels-photo-164745.jpeg',
-  },
-  {
-    id: 10,
-    name: 'Combo',
-    image: 'https://images.pexels.com/photos/164879/pexels-photo-164879.jpeg',
-  },
-];
+import { ProductStatus } from '../../../types/product';
 
 const FALLBACK_IMAGE = 'https://placehold.co/600x400?text=Audio+Product';
+const FALLBACK_CATEGORY_IMAGE = 'https://placehold.co/80?text=CAT';
 const PAGE_SIZE = 20;
 const DEFAULT_STATUS: ProductStatus = 'ACTIVE';
 
+type CategoryItem = {
+  id: string;
+  name: string;
+  image: string;
+};
+
+type ProductViewVariant = {
+  variantId: string;
+  optionName?: string;
+  optionValue?: string;
+  variantSku?: string;
+  price?: number;
+  variantPrice?: number;
+  stock?: number;
+  imageUrl?: string;
+};
+
+type ProductViewItem = {
+  productId: string;
+  name: string;
+  brandName?: string;
+  price?: number | null;
+  discountPrice?: number | null;
+  finalPrice?: number | null;
+  priceAfterPromotion?: number | null;
+  category?: string;
+  ratingAverage?: number | null;
+  reviewCount?: number | null;
+  thumbnailUrl?: string | null;
+  images?: string[];
+  variants?: ProductViewVariant[];
+  vouchers?: {
+    platformVouchers?: {
+      status?: string;
+      badgeLabel?: string;
+      badgeColor?: string;
+      badgeIconUrl?: string;
+      startTime?: string;
+      endTime?: string;
+      slotOpenTime?: string;
+      slotCloseTime?: string;
+      slotStatus?: string;
+      vouchers?: {
+        type?: 'PERCENT' | 'FIXED';
+        discountPercent?: number | null;
+        discountValue?: number | null;
+        maxDiscountValue?: number | null;
+        startTime?: string;
+        endTime?: string;
+        status?: string;
+      }[];
+    }[];
+  };
+};
+
+type ProductPageResponse = {
+  status: number;
+  message: string;
+  data: {
+    data: ProductViewItem[];
+    page: {
+      totalElements: number;
+      pageNumber: number;
+      pageSize: number;
+      totalPages: number;
+    };
+  };
+};
+
+type ProductCard = {
+  id: string;
+  name: string;
+  price: number;
+  priceRange?: { min: number; max: number } | null;
+  originalPrice?: number;
+  hasDiscount?: boolean;
+  image: string;
+  rating?: number;
+};
+
 const HomeScreen = () => {
   const navigation = useNavigation();
+  const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [searchInput, setSearchInput] = useState('');
   const [appliedKeyword, setAppliedKeyword] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [products, setProducts] = useState<ProductResponseItem[]>([]);
+  const [selectedCategoryName, setSelectedCategoryName] = useState<string | null>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [products, setProducts] = useState<ProductViewItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await httpClient.get<{ status: number; message: string; data: any[] }>(
+        '/categories',
+      );
+      const mapped: CategoryItem[] = (res.data?.data ?? []).map((item) => ({
+        id: item.categoryId ?? item.id ?? item.name,
+        name: item.name,
+        image: item.iconUrl || FALLBACK_CATEGORY_IMAGE,
+      }));
+      setCategories(mapped);
+    } catch (error) {
+      console.error('fetchCategories error', error);
+    }
+  }, []);
+
+  const calculatePricing = (product: ProductViewItem) => {
+    // Determine base/original price
+    let originalPrice = 0;
+    if (product.variants && product.variants.length > 0) {
+      const variantPrices = product.variants
+        .map((v) => v.price ?? v.variantPrice)
+        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+      if (variantPrices.length > 0) {
+        originalPrice = Math.min(...variantPrices);
+      }
+    }
+    if (!originalPrice) {
+      originalPrice =
+        product.price ??
+        product.finalPrice ??
+        product.priceAfterPromotion ??
+        product.discountPrice ??
+        0;
+    }
+
+    let discountedPrice = originalPrice;
+    let hasDiscount = false;
+
+    const firstCampaign = product.vouchers?.platformVouchers?.[0];
+    const firstVoucher = firstCampaign?.vouchers?.[0];
+    const now = new Date();
+
+    const isCampaignActive =
+      firstCampaign?.status === 'ACTIVE' &&
+      (!firstCampaign.startTime || new Date(firstCampaign.startTime) <= now) &&
+      (!firstCampaign.endTime || new Date(firstCampaign.endTime) >= now);
+
+    const isVoucherActive =
+      firstVoucher &&
+      (firstVoucher.status === 'ACTIVE' || !firstVoucher.status) &&
+      (!firstVoucher.startTime || new Date(firstVoucher.startTime) <= now) &&
+      (!firstVoucher.endTime || new Date(firstVoucher.endTime) >= now);
+
+    if (isCampaignActive && isVoucherActive && firstVoucher) {
+      if (firstVoucher.type === 'PERCENT' && firstVoucher.discountPercent) {
+        const discountValue = (originalPrice * firstVoucher.discountPercent) / 100;
+        const capped =
+          firstVoucher.maxDiscountValue !== null && firstVoucher.maxDiscountValue !== undefined
+            ? Math.min(discountValue, firstVoucher.maxDiscountValue)
+            : discountValue;
+        discountedPrice = Math.max(0, originalPrice - capped);
+      } else if (firstVoucher.type === 'FIXED' && firstVoucher.discountValue) {
+        discountedPrice = Math.max(0, originalPrice - firstVoucher.discountValue);
+      }
+      hasDiscount = discountedPrice < originalPrice;
+    }
+
+    // Build price range if variants exist
+    let priceRange: { min: number; max: number } | null = null;
+    if (product.variants && product.variants.length > 0) {
+      const variantPrices = product.variants
+        .map((v) => v.price ?? v.variantPrice)
+        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+      if (variantPrices.length > 0) {
+        priceRange = {
+          min: Math.min(...variantPrices),
+          max: Math.max(...variantPrices),
+        };
+      }
+    }
+
+    return { originalPrice, discountedPrice, hasDiscount, priceRange };
+  };
 
   const loadProducts = useCallback(
     async (isPullRefresh = false) => {
@@ -97,14 +212,17 @@ const HomeScreen = () => {
           setIsLoading(true);
         }
         setErrorMessage(null);
-        const response = await fetchProducts({
+        const response = await httpClient.get<ProductPageResponse>('/products/view', {
+          params: {
           keyword: appliedKeyword || undefined,
-          categoryName: selectedCategory || undefined,
+            categoryId: selectedCategoryId || undefined,
+          status: DEFAULT_STATUS,
           page: 0,
           size: PAGE_SIZE,
-          status: DEFAULT_STATUS,
+          },
         });
-        setProducts(response.data ?? []);
+        const apiProducts = response.data?.data?.data ?? [];
+        setProducts(apiProducts);
       } catch (error) {
         setErrorMessage('Không thể tải danh sách sản phẩm. Vui lòng thử lại.');
         console.error('fetchProducts error', error);
@@ -116,16 +234,17 @@ const HomeScreen = () => {
         }
       }
     },
-    [appliedKeyword, selectedCategory],
+    [appliedKeyword, selectedCategoryId],
   );
 
   useEffect(() => {
+    loadCategories();
     loadProducts();
-  }, [loadProducts]);
+  }, [loadProducts, loadCategories]);
 
   const bannerImages = useMemo(() => {
     const apiImages = products
-      .flatMap((product) => product.images?.[0])
+      .flatMap((product) => product.images?.[0] ?? product.thumbnailUrl)
       .filter((image): image is string => Boolean(image));
     return apiImages.length > 0 ? apiImages : [FALLBACK_IMAGE];
   }, [products]);
@@ -133,31 +252,17 @@ const HomeScreen = () => {
   const productCards = useMemo(
     () =>
       products.map((product) => {
-        // Calculate price from variants if available
-        let price = 0;
-        let priceRange: { min: number; max: number } | null = null;
-
-        if (product.variants && product.variants.length > 0) {
-          const variantPrices = product.variants.map((v) => v.variantPrice);
-          const minPrice = Math.min(...variantPrices);
-          const maxPrice = Math.max(...variantPrices);
-          priceRange = { min: minPrice, max: maxPrice };
-          price = minPrice; // Use min price as default for sorting/display
-        } else {
-          price =
-            product.finalPrice ??
-            product.priceAfterPromotion ??
-            product.price ??
-            0;
-        }
+        const { discountedPrice, originalPrice, hasDiscount, priceRange } = calculatePricing(product);
 
         return {
-          id: product.productId,
-          name: product.name,
-          price,
+        id: product.productId,
+        name: product.name,
+          price: discountedPrice,
+          originalPrice,
+          hasDiscount,
           priceRange,
-          image: product.images?.[0] ?? FALLBACK_IMAGE,
-          rating: product.ratingAverage ?? 4.5,
+          image: product.thumbnailUrl ?? product.images?.[0] ?? FALLBACK_IMAGE,
+        rating: product.ratingAverage ?? 4.5,
         };
       }),
     [products],
@@ -182,9 +287,17 @@ const HomeScreen = () => {
 
   const handleSelectCategory = useCallback(
     (categoryName: string | null) => {
-      setSelectedCategory(categoryName);
+      setSelectedCategoryName(categoryName);
+      if (!categoryName) {
+        setSelectedCategoryId(null);
+        return;
+      }
+      const found = categories.find(
+        (cat) => cat.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+      );
+      setSelectedCategoryId(found?.id ?? null);
     },
-    [],
+    [categories],
   );
 
   const renderErrorState = () => (
@@ -212,8 +325,8 @@ const HomeScreen = () => {
         }
       >
         <CategorySection
-          categories={API_CATEGORIES}
-          selectedCategoryName={selectedCategory}
+          categories={categories}
+          selectedCategoryName={selectedCategoryName}
           onSelectCategory={handleSelectCategory}
         />
         {isLoading && products.length === 0 ? (

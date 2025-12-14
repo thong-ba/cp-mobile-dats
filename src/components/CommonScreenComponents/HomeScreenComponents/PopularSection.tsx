@@ -7,8 +7,10 @@ const ORANGE = '#FF6A00';
 type Product = {
   id: string;
   name: string;
-  price: number;
+  price: number; // discounted price if hasDiscount, otherwise original
   priceRange?: { min: number; max: number } | null;
+  originalPrice?: number;
+  hasDiscount?: boolean;
   image: string;
 };
 
@@ -39,11 +41,18 @@ const PopularSection: React.FC<Props> = ({ products, onPressItem }) => {
             <Image source={{ uri: item.image }} style={styles.image} />
             <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
               <Text numberOfLines={2} style={styles.name}>{item.name}</Text>
-              <Text style={styles.price}>
-                {item.priceRange
-                  ? `${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.min)} - ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.max)}`
-                  : new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}
-              </Text>
+              <View style={styles.priceBlock}>
+                <Text style={[styles.price, item.hasDiscount && styles.priceDiscount]}>
+                  {item.priceRange
+                    ? `${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.min)} - ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.priceRange.max)}`
+                    : new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.price)}
+                </Text>
+                {item.hasDiscount && item.originalPrice ? (
+                  <Text style={styles.originalPrice}>
+                    {new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(item.originalPrice)}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           </TouchableOpacity>
         )}
@@ -85,5 +94,16 @@ const styles = StyleSheet.create({
   image: { width: '100%', height: 120 },
   name: { marginTop: 8, color: COLORS.text, fontWeight: '600' },
   price: { marginTop: 4, color: ORANGE, fontWeight: '700' },
+  priceDiscount: { color: '#D32F2F' },
+  originalPrice: {
+    marginTop: 2,
+    color: '#888',
+    textDecorationLine: 'line-through',
+    fontSize: 12,
+  },
+  priceBlock: {
+    marginTop: 4,
+    paddingBottom: 4,
+  },
 });
 
