@@ -1,8 +1,9 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { RouteProp, useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,7 +25,7 @@ import {
 } from '../../../services/shippingService';
 import { getShopVouchersByStore } from '../../../services/voucherService';
 import { Cart } from '../../../types/cart';
-import { PaymentMethod } from '../../../types/checkout';
+import { CheckoutItemPayload, PaymentMethod } from '../../../types/checkout';
 import { CustomerAddress } from '../../../types/customer';
 import { PlatformCampaign, PlatformVoucherItem } from '../../../types/product';
 import {
@@ -34,10 +35,29 @@ import {
   ShopVoucher,
 } from '../../../types/voucher';
 
+const AsyncStorage: any =
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('@react-native-async-storage/async-storage').default;
+
+const CHECKOUT_SESSION_KEY = 'checkout:payload:v1';
+
 const ORANGE = '#FF6A00';
 
 const formatCurrencyVND = (value: number) =>
   new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(value);
+
+// Disable all logging - replace console with no-op functions
+const noop = (...args: any[]) => {};
+const log = {
+  log: noop,
+  error: noop,
+  warn: noop,
+};
+
+// Throttle logging to once per 30 seconds per key (disabled)
+const throttledLog = (key: string, logFn: () => void) => {
+  // Logging disabled - do nothing
+};
 
 const CheckoutScreen: React.FC = () => {
   const navigation = useNavigation();
@@ -52,6 +72,11 @@ const CheckoutScreen: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
+
+  // Track if data has been loaded to prevent repeated loading
+  const hasLoadedRef = useRef(false);
+  // Track last log time for throttling (30s)
+  const lastLogTimeRef = useRef<Record<string, number>>({});
 
   // Voucher states
   const [availableVouchers, setAvailableVouchers] = useState<ShopVoucher[]>([]);
@@ -101,22 +126,37 @@ const CheckoutScreen: React.FC = () => {
   const loadData = useCallback(async () => {
     const customerId = authState.decodedToken?.customerId;
     const accessToken = authState.accessToken;
-    if (!customerId || !accessToken) return;
+    if (!customerId || !accessToken) {
+      log.log('[CheckoutScreen] loadData: Skipped - No customerId or accessToken');
+      return;
+    }
     try {
+      log.log('[CheckoutScreen] loadData: Starting...', { customerId });
       setIsLoading(true);
       setErrorMessage(null);
       const [cartData, addressData] = await Promise.all([
         getCustomerCart({ customerId, accessToken }),
         getCustomerAddresses({ customerId, accessToken }),
       ]);
+      log.log('[CheckoutScreen] loadData: Success', {
+        cartItemsCount: cartData.items.length,
+        addressesCount: addressData.length,
+        cartSubtotal: cartData.subtotal,
+        cartGrandTotal: cartData.grandTotal,
+      });
       setCart(cartData);
       setAddresses(addressData);
       if (!selectedAddressId && addressData.length > 0) {
         const defaultAddress = addressData.find((a) => a.default) ?? addressData[0];
+        log.log('[CheckoutScreen] loadData: Setting default address', { addressId: defaultAddress.id });
         setSelectedAddressId(defaultAddress.id);
       }
     } catch (error: any) {
-      console.error('[CheckoutScreen] loadData failed', error);
+      log.error('[CheckoutScreen] loadData: Failed', {
+        status: error?.response?.status,
+        message: error?.message,
+        error,
+      });
       const message =
         error?.response?.status === 401
           ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
@@ -126,19 +166,34 @@ const CheckoutScreen: React.FC = () => {
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
+      log.log('[CheckoutScreen] loadData: Completed');
     }
   }, [authState.accessToken, authState.decodedToken?.customerId, selectedAddressId]);
 
-  // Load vouchers for products
+  // Load vouchers for products (only once when cart is loaded)
   useEffect(() => {
-    if (!cart || cart.items.length === 0) return;
+    if (!cart || cart.items.length === 0) {
+      throttledLog('loadVouchers_skipped', () => {
+        log.log('[CheckoutScreen] loadVouchers: Skipped - No cart or empty items');
+      });
+      return;
+    }
     const loadVouchers = async () => {
       const customerId = authState.decodedToken?.customerId;
       const accessToken = authState.accessToken;
-      if (!customerId || !accessToken) return;
+      if (!customerId || !accessToken) {
+        // log.log('[CheckoutScreen] loadVouchers: Skipped - No customerId or accessToken');
+        return;
+      }
 
       try {
         const uniqueProductIds = Array.from(new Set(cart.items.map((item) => item.refId)));
+        throttledLog('loadVouchers_start', () => {
+          log.log('[CheckoutScreen] loadVouchers: Starting...', {
+            productIdsCount: uniqueProductIds.length,
+            productIds: uniqueProductIds,
+          });
+        });
         const voucherPromises = uniqueProductIds.map(async (productId) => {
           try {
             const [voucherData, productData] = await Promise.all([
@@ -148,6 +203,13 @@ const CheckoutScreen: React.FC = () => {
 
              // Update product cache
              if (productData) {
+               // log.log(`[CheckoutScreen] loadVouchers: Product ${productId} loaded`, {
+               //   storeId: productData.storeId,
+               //   storeName: productData.storeName,
+               //   weight: productData.weight,
+               //   districtCode: productData.districtCode,
+               //   wardCode: productData.wardCode,
+               // });
                setProductCache((prev) => ({
                  ...prev,
                  [productId]: {
@@ -159,10 +221,15 @@ const CheckoutScreen: React.FC = () => {
                    wardCode: productData.wardCode || '',
                  },
                }));
+             } else {
+               // log.log(`[CheckoutScreen] loadVouchers: Product ${productId} - No product data`);
              }
 
             // Process shop vouchers
             const shopVouchers = (voucherData?.vouchers?.shop as any[]) || [];
+            // log.log(`[CheckoutScreen] loadVouchers: Product ${productId} - Shop vouchers`, {
+            //   count: shopVouchers.length,
+            // });
             const shopVouchersWithStore = shopVouchers.map((v) => ({
               ...v,
               storeId: productData?.storeId,
@@ -207,6 +274,13 @@ const CheckoutScreen: React.FC = () => {
             const cartItem = cart.items.find((item) => item.refId === productId);
             const inPlatformCampaign = cartItem?.inPlatformCampaign || false;
 
+            // log.log(`[CheckoutScreen] loadVouchers: Product ${productId} - Platform voucher`, {
+            //   platformDiscount,
+            //   campaignProductId,
+            //   inPlatformCampaign,
+            //   platformVoucherId: activeVoucher?.platformVoucherId,
+            // });
+
             setPlatformVoucherDiscounts((prev) => ({
               ...prev,
               [productId]: {
@@ -219,7 +293,7 @@ const CheckoutScreen: React.FC = () => {
 
             return shopVouchersWithStore;
           } catch (error) {
-            console.error(`[CheckoutScreen] Failed to load vouchers for product ${productId}`, error);
+            // log.error(`[CheckoutScreen] Failed to load vouchers for product ${productId}`, error);
             return [];
           }
         });
@@ -230,6 +304,12 @@ const CheckoutScreen: React.FC = () => {
         const uniqueVouchers = Array.from(
           new Map(flatShopVouchers.map((v) => [v.code, v])).values(),
         );
+        throttledLog('loadVouchers_shop', () => {
+          log.log('[CheckoutScreen] loadVouchers: Shop vouchers loaded', {
+            total: flatShopVouchers.length,
+            unique: uniqueVouchers.length,
+          });
+        });
         setAvailableVouchers(uniqueVouchers);
 
         // Load store-wide vouchers
@@ -244,14 +324,26 @@ const CheckoutScreen: React.FC = () => {
           ),
         ) as string[];
 
+        throttledLog('loadVouchers_store_wide', () => {
+          log.log('[CheckoutScreen] loadVouchers: Loading store-wide vouchers', {
+            storeIdsCount: storeIds.length,
+            storeIds,
+          });
+        });
+
         const storeWidePromises = storeIds
           .filter((storeId) => storeId && storeId.trim() !== '')
           .map(async (storeId) => {
             try {
+              // log.log(`[CheckoutScreen] loadVouchers: Fetching store-wide vouchers for store ${storeId}`);
               const vouchers = await getShopVouchersByStore(storeId, 'ACTIVE', 'ALL_SHOP_VOUCHER');
+              // log.log(`[CheckoutScreen] loadVouchers: Store ${storeId} - Store-wide vouchers loaded`, {
+              //   count: vouchers.length,
+              // });
               return { storeId, vouchers };
             } catch (error) {
               // getShopVouchersByStore already handles 404, so this is for other errors
+              // log.log(`[CheckoutScreen] loadVouchers: Store ${storeId} - No store-wide vouchers`);
               return { storeId, vouchers: [] };
             }
           });
@@ -261,9 +353,15 @@ const CheckoutScreen: React.FC = () => {
         storeWideResults.forEach(({ storeId, vouchers }) => {
           storeWideMap[storeId] = vouchers;
         });
+        throttledLog('loadVouchers_store_wide_loaded', () => {
+          log.log('[CheckoutScreen] loadVouchers: Store-wide vouchers loaded', {
+            storesCount: Object.keys(storeWideMap).length,
+            totalVouchers: Object.values(storeWideMap).reduce((sum, v) => sum + v.length, 0),
+          });
+        });
         setStoreWideVouchers(storeWideMap);
       } catch (error) {
-        console.error('[CheckoutScreen] loadVouchers failed', error);
+        // log.error('[CheckoutScreen] loadVouchers: Failed', error);
       }
     };
 
@@ -273,17 +371,43 @@ const CheckoutScreen: React.FC = () => {
   // Fetch missing product details for shipping calculation
   const fetchMissingProductDetails = useCallback(
     async (productIds: string[]) => {
-      if (productIds.length === 0) return productCache;
+      if (productIds.length === 0) {
+        throttledLog('fetchMissingProductDetails_skipped', () => {
+          log.log('[CheckoutScreen] fetchMissingProductDetails: Skipped - No productIds');
+        });
+        return productCache;
+      }
       
       const missingIds = productIds.filter((id) => !productCache[id]);
       if (missingIds.length === 0) {
+        throttledLog('fetchMissingProductDetails_cached', () => {
+          log.log('[CheckoutScreen] fetchMissingProductDetails: All products already in cache', {
+            total: productIds.length,
+          });
+        });
         return productCache;
       }
+
+      throttledLog('fetchMissingProductDetails_start', () => {
+        log.log('[CheckoutScreen] fetchMissingProductDetails: Starting...', {
+          total: productIds.length,
+          missing: missingIds.length,
+          missingIds,
+        });
+      });
 
       try {
         const productPromises = missingIds.map(async (productId) => {
           try {
+            // log.log(`[CheckoutScreen] fetchMissingProductDetails: Fetching product ${productId}`);
             const product = await getProductById(productId);
+            // log.log(`[CheckoutScreen] fetchMissingProductDetails: Product ${productId} loaded`, {
+            //   storeId: product.storeId,
+            //   storeName: product.storeName,
+            //   weight: product.weight,
+            //   districtCode: product.districtCode,
+            //   wardCode: product.wardCode,
+            // });
             return {
               productId,
               storeId: product.storeId,
@@ -294,7 +418,9 @@ const CheckoutScreen: React.FC = () => {
             };
           } catch (error: any) {
             if (error?.response?.status !== 404) {
-              console.error(`[CheckoutScreen] Failed to fetch product ${productId}`, error);
+              // log.error(`[CheckoutScreen] fetchMissingProductDetails: Failed to fetch product ${productId}`, error);
+            } else {
+              // log.log(`[CheckoutScreen] fetchMissingProductDetails: Product ${productId} not found (404)`);
             }
             return null;
           }
@@ -308,10 +434,17 @@ const CheckoutScreen: React.FC = () => {
           }
         });
 
+        throttledLog('fetchMissingProductDetails_completed', () => {
+          log.log('[CheckoutScreen] fetchMissingProductDetails: Completed', {
+            fetched: Object.keys(newCache).length,
+            totalInCache: Object.keys({ ...productCache, ...newCache }).length,
+          });
+        });
+
         setProductCache((prev) => ({ ...prev, ...newCache }));
         return { ...productCache, ...newCache };
       } catch (error) {
-        console.error('[CheckoutScreen] fetchMissingProductDetails failed', error);
+        // log.error('[CheckoutScreen] fetchMissingProductDetails: Failed', error);
         return productCache;
       }
     },
@@ -335,13 +468,33 @@ const CheckoutScreen: React.FC = () => {
     const timeoutId = setTimeout(async () => {
       const customerId = authState.decodedToken?.customerId;
       const accessToken = authState.accessToken;
-      if (!customerId || !accessToken) return;
+      if (!customerId || !accessToken) {
+        // log.log('[CheckoutScreen] calculateShippingFee: Skipped - No customerId or accessToken');
+        return;
+      }
 
       const selectedAddress = addresses.find((a) => a.id === selectedAddressId);
-      if (!selectedAddress) return;
+      if (!selectedAddress) {
+        throttledLog('calculateShippingFee_no_address', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Skipped - No selected address');
+        });
+        return;
+      }
+
+      throttledLog('calculateShippingFee_start', () => {
+        log.log('[CheckoutScreen] calculateShippingFee: Starting...', {
+          addressId: selectedAddressId,
+          address: {
+            province: selectedAddress.province,
+            district: selectedAddress.district,
+            ward: selectedAddress.ward,
+          },
+        });
+      });
 
       // Validate address
       if (!selectedAddress.provinceCode || !selectedAddress.districtId || !selectedAddress.wardCode) {
+        // log.log('[CheckoutScreen] calculateShippingFee: Invalid address - Missing required fields');
         setShippingFeeError('Địa chỉ giao hàng chưa đầy đủ thông tin');
         setShippingFee(0);
         setIsCalculatingShipping(false);
@@ -354,7 +507,14 @@ const CheckoutScreen: React.FC = () => {
 
         // Filter items đã được chọn (isSelected = true)
         const selectedItems = cartItems.filter((item) => item.isSelected);
+        throttledLog('calculateShippingFee_selected_items', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Selected items', {
+            total: cartItems.length,
+            selected: selectedItems.length,
+          });
+        });
         if (selectedItems.length === 0) {
+          // log.log('[CheckoutScreen] calculateShippingFee: No selected items');
           setShippingFee(0);
           setStoreShippingFees({});
           setIsCalculatingShipping(false);
@@ -363,8 +523,19 @@ const CheckoutScreen: React.FC = () => {
 
         // Step 3: Fetch missing product details
         const productIds = Array.from(new Set(selectedItems.map((item) => item.refId)));
+        throttledLog('calculateShippingFee_fetch_products', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Fetching product details', {
+            productIdsCount: productIds.length,
+            productIds,
+          });
+        });
         const updatedCache = await fetchMissingProductDetails(productIds);
         const cacheToUse = updatedCache || productCache;
+        throttledLog('calculateShippingFee_cache_ready', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Product cache ready', {
+            cacheSize: Object.keys(cacheToUse).length,
+          });
+        });
 
         // Step 4: Group items theo storeId
         const itemsByStore: Record<string, typeof selectedItems> = {};
@@ -373,6 +544,7 @@ const CheckoutScreen: React.FC = () => {
         selectedItems.forEach((item) => {
           const cache = cacheToUse[item.refId];
           if (!cache?.storeId) {
+            // log.log(`[CheckoutScreen] calculateShippingFee: Item ${item.refId} - No storeId in cache`);
             return;
           }
           const storeId = cache.storeId;
@@ -383,7 +555,19 @@ const CheckoutScreen: React.FC = () => {
           storeNameMap[storeId] = cache.storeName || 'Unknown Store';
         });
 
+        throttledLog('calculateShippingFee_grouped', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Grouped by store', {
+            storesCount: Object.keys(itemsByStore).length,
+            stores: Object.keys(itemsByStore).map((storeId) => ({
+              storeId,
+              storeName: storeNameMap[storeId],
+              itemsCount: itemsByStore[storeId].length,
+            })),
+          });
+        });
+
         if (Object.keys(itemsByStore).length === 0) {
+          // log.log('[CheckoutScreen] calculateShippingFee: No stores found');
           setShippingFeeError('Không thể xác định cửa hàng cho các sản phẩm');
           setIsCalculatingShipping(false);
           return;
@@ -394,11 +578,17 @@ const CheckoutScreen: React.FC = () => {
         // Step 5: Với mỗi store (song song): Calculate shipping fee
         const storeFeePromises = Object.entries(itemsByStore).map(async ([storeId, storeItems]) => {
           try {
+            // log.log(`[CheckoutScreen] calculateShippingFee: Processing store ${storeId}`, {
+            //   itemsCount: storeItems.length,
+            //   storeName: storeNameMap[storeId],
+            // });
+
             // a. Lấy địa chỉ gửi từ product đầu tiên của store
             const firstItem = storeItems[0];
             const firstItemCache = cacheToUse[firstItem.refId];
             
             if (!firstItemCache?.districtCode || !firstItemCache?.wardCode) {
+              // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Missing origin address`);
               return { storeId, fee: 0, error: 'Missing origin address' };
             }
 
@@ -406,20 +596,36 @@ const CheckoutScreen: React.FC = () => {
             const fromWardCode = firstItemCache.wardCode;
 
             if (!fromDistrictId || !fromWardCode) {
+              // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Invalid origin address`, {
+              //   districtCode: firstItemCache.districtCode,
+              //   wardCode: firstItemCache.wardCode,
+              // });
               return { storeId, fee: 0, error: 'Invalid origin address' };
             }
 
             // b. Build GHN items
             const ghnItems = buildGHNItems(storeItems, cacheToUse);
+            // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - GHN items built`, {
+            //   itemsCount: ghnItems.length,
+            // });
 
             // c. Tính tổng weight của package
             const totalWeightGrams = calculateTotalWeightGrams(storeItems, cacheToUse);
+            // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Total weight`, {
+            //   weightGrams: totalWeightGrams,
+            //   weightKg: (totalWeightGrams / 1000).toFixed(2),
+            // });
             if (totalWeightGrams === 0) {
+              // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Zero weight`);
               return { storeId, fee: 0, error: 'Zero weight' };
             }
 
             // d. Tính service type (2 hoặc 5)
             const serviceType = calculateServiceType(storeItems, cacheToUse);
+            // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Service type`, {
+            //   serviceType,
+            //   weightGrams: totalWeightGrams,
+            // });
 
             // e. Build request body
             const ghnRequest = {
@@ -432,17 +638,36 @@ const CheckoutScreen: React.FC = () => {
               items: ghnItems,
             };
 
+            // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Calling GHN API`, {
+            //   serviceType,
+            //   fromDistrictId,
+            //   fromWardCode,
+            //   toDistrictId: selectedAddress.districtId,
+            //   toWardCode: selectedAddress.wardCode,
+            //   weightGrams: totalWeightGrams,
+            // });
+
             // f. Gọi GHN API
             const fee = await calculateGHNFee(ghnRequest, accessToken);
+            
+            // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - GHN API response`, {
+            //   fee,
+            //   storeName: storeNameMap[storeId],
+            // });
             
             // Step 6: Xử lý response từ GHN API
             return { storeId, fee, error: null };
           } catch (error: any) {
             // Step 6: Xử lý error
             if (error?.response?.status === 404) {
+              // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Service not available (404)`);
               return { storeId, fee: 0, error: null }; // Service not available, not an error
             }
             const errorMessage = error?.response?.data?.message || error?.message || 'Unknown error';
+            // log.error(`[CheckoutScreen] calculateShippingFee: Store ${storeId} - Error`, {
+            //   status: error?.response?.status,
+            //   message: errorMessage,
+            // });
             return { storeId, fee: 0, error: errorMessage };
           }
         });
@@ -454,6 +679,10 @@ const CheckoutScreen: React.FC = () => {
         let totalFee = 0;
         let hasError = false;
 
+        // log.log('[CheckoutScreen] calculateShippingFee: Processing results', {
+        //   storesCount: storeFeeResults.length,
+        // });
+
         storeFeeResults.forEach(({ storeId, fee, error }) => {
           feesMap[storeId] = fee;
           totalFee += fee;
@@ -461,6 +690,20 @@ const CheckoutScreen: React.FC = () => {
             errorsMap[storeId] = error;
             hasError = true;
           }
+          // log.log(`[CheckoutScreen] calculateShippingFee: Store ${storeId} result`, {
+          //   fee,
+          //   error: error || null,
+          //   storeName: storeNameMap[storeId],
+          // });
+        });
+
+        throttledLog('calculateShippingFee_summary', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Final summary', {
+            totalFee,
+            storeFees: feesMap,
+            hasError,
+            errors: hasError ? errorsMap : null,
+          });
         });
 
         setStoreShippingFees(feesMap);
@@ -476,12 +719,19 @@ const CheckoutScreen: React.FC = () => {
           setShippingFeeError(null);
         }
       } catch (error: any) {
-        console.error('[CheckoutScreen] calculateShippingFee failed', error);
+        // log.error('[CheckoutScreen] calculateShippingFee: Failed', {
+        //   status: error?.response?.status,
+        //   message: error?.message,
+        //   error,
+        // });
         setShippingFeeError('Không thể tính phí ship. Vui lòng thử lại.');
         setShippingFee(0);
         setStoreShippingFees({});
       } finally {
         setIsCalculatingShipping(false);
+        throttledLog('calculateShippingFee_completed', () => {
+          log.log('[CheckoutScreen] calculateShippingFee: Completed');
+        });
       }
     }, 500); // Debounce 500ms
 
@@ -499,20 +749,31 @@ const CheckoutScreen: React.FC = () => {
   // Prefill cart from navigation params
   useEffect(() => {
     if (route.params?.cart) {
+      // log.log('[CheckoutScreen] Prefill cart from params', {
+      //   cartId: route.params.cart.cartId,
+      //   itemsCount: route.params.cart.items.length,
+      //   subtotal: route.params.cart.subtotal,
+      // });
       setCart(route.params.cart);
     }
   }, [route.params?.cart]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (isAuthenticated) {
-        loadData();
-      }
-    }, [isAuthenticated, loadData]),
-  );
+  // Load data only once when screen mounts or when authenticated
+  useEffect(() => {
+    if (isAuthenticated && !hasLoadedRef.current) {
+      // log.log('[CheckoutScreen] Initial load: Loading data...');
+      loadData();
+      hasLoadedRef.current = true;
+    } else if (!isAuthenticated) {
+      throttledLog('not_authenticated', () => {
+        log.log('[CheckoutScreen] Not authenticated');
+      });
+    }
+  }, [isAuthenticated, loadData]);
 
   useEffect(() => {
     if (!isAuthenticated) {
+      // log.log('[CheckoutScreen] Not authenticated, redirecting to Profile...');
       const tabNavigator = navigation.getParent();
       tabNavigator?.navigate('Profile' as never);
     }
@@ -533,8 +794,21 @@ const CheckoutScreen: React.FC = () => {
   // Apply/remove store voucher
   const handleApplyStoreVoucher = useCallback(
     (voucher: ShopVoucher, productId: string) => {
+      // log.log('[CheckoutScreen] handleApplyStoreVoucher: Starting...', {
+      //   voucherCode: voucher.code,
+      //   voucherId: voucher.voucherId,
+      //   productId,
+      //   storeId: voucher.storeId,
+      // });
+
       const storeTotal = storeTotals[voucher.storeId || ''] || 0;
+      // log.log('[CheckoutScreen] handleApplyStoreVoucher: Store total', {
+      //   storeTotal,
+      //   minOrderValue: voucher.minOrderValue,
+      // });
+
       if (voucher.minOrderValue && storeTotal < voucher.minOrderValue) {
+        // log.log('[CheckoutScreen] handleApplyStoreVoucher: Validation failed - Min order value not met');
         setSnackbarMessage(
           `Voucher yêu cầu đơn hàng tối thiểu ${formatCurrencyVND(voucher.minOrderValue)}`,
         );
@@ -552,6 +826,12 @@ const CheckoutScreen: React.FC = () => {
       } else if (voucher.type === 'FIXED' && voucher.discountValue) {
         discountValue = voucher.discountValue;
       }
+
+      // log.log('[CheckoutScreen] handleApplyStoreVoucher: Applied', {
+      //   voucherCode: voucher.code,
+      //   discountValue,
+      //   type: voucher.type,
+      // });
 
       setAppliedStoreVouchers((prev) => ({
         ...prev,
@@ -568,9 +848,14 @@ const CheckoutScreen: React.FC = () => {
   );
 
   const handleRemoveStoreVoucher = useCallback((productId: string) => {
+    // log.log('[CheckoutScreen] handleRemoveStoreVoucher: Removing voucher', { productId });
     setAppliedStoreVouchers((prev) => {
       const next = { ...prev };
       delete next[productId];
+      // log.log('[CheckoutScreen] handleRemoveStoreVoucher: Removed', {
+      //   productId,
+      //   remainingVouchers: Object.keys(next).length,
+      // });
       return next;
     });
   }, []);
@@ -578,8 +863,20 @@ const CheckoutScreen: React.FC = () => {
   // Apply/remove store-wide voucher
   const handleApplyStoreWideVoucher = useCallback(
     (voucher: ShopVoucher, storeId: string) => {
+      // log.log('[CheckoutScreen] handleApplyStoreWideVoucher: Starting...', {
+      //   voucherCode: voucher.code,
+      //   voucherId: voucher.voucherId,
+      //   storeId,
+      // });
+
       const storeTotal = storeTotals[storeId] || 0;
+      // log.log('[CheckoutScreen] handleApplyStoreWideVoucher: Store total', {
+      //   storeTotal,
+      //   minOrderValue: voucher.minOrderValue,
+      // });
+
       if (voucher.minOrderValue && storeTotal < voucher.minOrderValue) {
+        // log.log('[CheckoutScreen] handleApplyStoreWideVoucher: Validation failed - Min order value not met');
         setSnackbarMessage(
           `Voucher yêu cầu đơn hàng tối thiểu ${formatCurrencyVND(voucher.minOrderValue)}`,
         );
@@ -598,6 +895,12 @@ const CheckoutScreen: React.FC = () => {
         discountValue = voucher.discountValue;
       }
 
+      // log.log('[CheckoutScreen] handleApplyStoreWideVoucher: Applied', {
+      //   voucherCode: voucher.code,
+      //   discountValue,
+      //   type: voucher.type,
+      // });
+
       setAppliedStoreWideVouchers((prev) => ({
         ...prev,
         [storeId]: {
@@ -613,9 +916,14 @@ const CheckoutScreen: React.FC = () => {
   );
 
   const handleRemoveStoreWideVoucher = useCallback((storeId: string) => {
+    // log.log('[CheckoutScreen] handleRemoveStoreWideVoucher: Removing voucher', { storeId });
     setAppliedStoreWideVouchers((prev) => {
       const next = { ...prev };
       delete next[storeId];
+      // log.log('[CheckoutScreen] handleRemoveStoreWideVoucher: Removed', {
+      //   storeId,
+      //   remainingVouchers: Object.keys(next).length,
+      // });
       return next;
     });
   }, []);
@@ -623,6 +931,7 @@ const CheckoutScreen: React.FC = () => {
   // Calculate pricing
   const pricing = useMemo(() => {
     if (!cart || cartItems.length === 0) {
+      // log.log('[CheckoutScreen] pricing: No cart or empty items');
       return {
         subtotalBeforePlatformDiscount: 0,
         subtotalAfterPlatformDiscount: 0,
@@ -664,6 +973,17 @@ const CheckoutScreen: React.FC = () => {
       ),
     );
 
+    // log.log('[CheckoutScreen] pricing: Calculated', {
+    //   subtotalBeforePlatformDiscount,
+    //   subtotalAfterPlatformDiscount,
+    //   totalPlatformDiscount,
+    //   storeVoucherDiscount,
+    //   storeWideVoucherDiscount,
+    //   voucherDiscount,
+    //   shippingFee,
+    //   total,
+    // });
+
     return {
       subtotalBeforePlatformDiscount,
       subtotalAfterPlatformDiscount,
@@ -674,27 +994,52 @@ const CheckoutScreen: React.FC = () => {
     };
   }, [cart, cartItems, appliedStoreVouchers, appliedStoreWideVouchers, shippingFee]);
 
-  // Build checkout payload
-  const buildCheckoutPayload = useCallback(() => {
-    if (!selectedAddressId || !cart) return null;
+  // Build checkout payload with proper COMBO and variantId handling
+  const buildCheckoutPayload = useCallback(async () => {
+    if (!selectedAddressId || !cart) {
+      // log.log('[CheckoutScreen] buildCheckoutPayload: Skipped - No address or cart');
+      return null;
+    }
 
-    const items = cartItems.map((item) => {
-      const payload: any = {
-        type: 'PRODUCT' as const,
+    // log.log('[CheckoutScreen] buildCheckoutPayload: Building payload...', {
+    //   itemsCount: cartItems.length,
+    //   addressId: selectedAddressId,
+    // });
+
+    // Step 1: Build checkout items payload
+    const items: CheckoutItemPayload[] = cartItems.map((item) => {
+      const basePayload: CheckoutItemPayload = {
+        type: 'PRODUCT',
         quantity: item.quantity,
       };
-      // If has variantId, send variantId (don't send productId)
-      if (item.variantId) {
-        payload.variantId = item.variantId;
-      } else {
-        // If no variantId, send productId (refId)
-        // Note: COMBO handling would require additional field in CartItem type
-        // For now, treat all items without variantId as PRODUCT
-        payload.productId = item.refId;
+
+      // Check if item is COMBO
+      // Since CartItem.type doesn't include 'COMBO', we need to detect it differently
+      // For now, we'll check if the item has a specific pattern or flag
+      // TODO: Add COMBO detection logic based on your business rules
+      // For example: check if refId starts with 'combo-' or has a specific flag
+      const isCombo = false; // Placeholder - implement COMBO detection logic here
+
+      if (isCombo) {
+        // COMBO: Gửi comboId = refId (productId)
+        basePayload.type = 'COMBO';
+        basePayload.comboId = item.refId;
+        return basePayload;
       }
-      return payload;
+
+      // PRODUCT
+      if (item.variantId !== null && item.variantId !== undefined) {
+        // Có variantId → gửi variantId, KHÔNG gửi productId
+        basePayload.variantId = item.variantId;
+        return basePayload;
+      }
+
+      // Không có variantId → gửi productId, KHÔNG gửi variantId
+      basePayload.productId = item.refId;
+      return basePayload;
     });
 
+    // Step 2: Build store vouchers (array format, not grouped)
     const storeVouchers = [
       ...Object.values(appliedStoreVouchers).map((v) => ({
         voucherId: v.voucherId,
@@ -708,7 +1053,7 @@ const CheckoutScreen: React.FC = () => {
       })),
     ];
 
-    // Calculate serviceTypeId for each store
+    // Step 3: Calculate serviceTypeId for each store
     const serviceTypeIds: Record<string, number> = {};
     const itemsByStore: Record<string, typeof cartItems> = {};
     
@@ -729,20 +1074,122 @@ const CheckoutScreen: React.FC = () => {
       serviceTypeIds[storeId] = calculateServiceType(storeItems, productCache);
     });
 
-    // Build platform vouchers
-    const platformVouchersMap: Record<string, { campaignProductId: string; quantity: number; platformVoucherId?: string }> = {};
-    cartItems.forEach((item) => {
-      const discount = platformVoucherDiscounts[item.refId];
-      if (discount && discount.campaignProductId) {
-        const key = discount.campaignProductId;
-        if (!platformVouchersMap[key]) {
-          platformVouchersMap[key] = {
-            campaignProductId: discount.campaignProductId,
-            quantity: 0,
-            platformVoucherId: discount.platformVoucherId,
-          };
+    // Step 4: Build platform vouchers (fetch missing if needed, group by campaignProductId)
+    // Check for missing platform vouchers (for variants)
+    const missingProductIds = new Set<string>();
+    items.forEach((item) => {
+      if (item.variantId && !item.productId) {
+        // Có variantId nhưng không có productId trong payload
+        // Cần tìm productId từ cartItems
+        const cartItem = cartItems.find((ci) => ci.variantId === item.variantId);
+        if (cartItem && !platformVoucherDiscounts[cartItem.refId]) {
+          missingProductIds.add(cartItem.refId);
         }
-        platformVouchersMap[key].quantity += item.quantity;
+      } else if (item.productId && !platformVoucherDiscounts[item.productId]) {
+        missingProductIds.add(item.productId);
+      }
+    });
+
+    // Fetch missing platform vouchers
+    let finalPlatformVoucherDiscounts = { ...platformVoucherDiscounts };
+    if (missingProductIds.size > 0) {
+      // log.log('[CheckoutScreen] buildCheckoutPayload: Fetching missing platform vouchers', {
+      //   missingProductIds: Array.from(missingProductIds),
+      // });
+
+      const customerId = authState.decodedToken?.customerId;
+      const accessToken = authState.accessToken;
+      if (customerId && accessToken) {
+        const voucherPromises = Array.from(missingProductIds).map(async (productId) => {
+          try {
+            const voucherRes = await getProductVouchers(productId);
+            const platformCampaigns = voucherRes?.vouchers?.platform || [];
+            let platformDiscount = 0;
+            let campaignProductId: string | null = null;
+            let platformVoucherId: string | undefined = undefined;
+
+            // Tìm active voucher
+            for (const campaign of platformCampaigns) {
+              if (campaign.status === 'ACTIVE' && campaign.vouchers && campaign.vouchers.length > 0) {
+                const activeVoucher = campaign.vouchers.find((v: PlatformVoucherItem) => v.status === 'ACTIVE');
+                if (activeVoucher) {
+                  campaignProductId = activeVoucher.platformVoucherId || campaign.campaignId || '';
+                  platformVoucherId = activeVoucher.platformVoucherId;
+
+                  // Tính discount
+                  const productData = await getProductById(productId).catch(() => null);
+                  const basePrice = productData?.price || 0;
+
+                  if (activeVoucher.type === 'FIXED' && activeVoucher.discountValue) {
+                    platformDiscount = activeVoucher.discountValue;
+                  } else if (activeVoucher.type === 'PERCENT' && activeVoucher.discountPercent) {
+                    const percentDiscount = (basePrice * activeVoucher.discountPercent) / 100;
+                    platformDiscount = activeVoucher.maxDiscountValue
+                      ? Math.min(percentDiscount, activeVoucher.maxDiscountValue)
+                      : percentDiscount;
+                  }
+                  break;
+                }
+              }
+            }
+
+            if (campaignProductId && platformDiscount > 0) {
+              return { productId, discount: platformDiscount, campaignProductId, platformVoucherId };
+            }
+            return null;
+          } catch (error) {
+            // log.error(`[CheckoutScreen] buildCheckoutPayload: Failed to fetch platform voucher for ${productId}`, error);
+            return null;
+          }
+        });
+
+        const results = await Promise.all(voucherPromises);
+        results.forEach((result) => {
+          if (result) {
+            finalPlatformVoucherDiscounts[result.productId] = {
+              discount: result.discount,
+              campaignProductId: result.campaignProductId,
+              inPlatformCampaign: true,
+              platformVoucherId: result.platformVoucherId,
+            };
+          }
+        });
+      }
+    }
+
+    // Build platform vouchers map (gom theo campaignProductId)
+    const platformVouchersMap: Record<string, { campaignProductId: string; quantity: number; platformVoucherId?: string }> = {};
+
+    items.forEach((item) => {
+      let productId: string | null = null;
+
+      // Tìm productId từ variantId nếu cần
+      if (item.variantId && !item.productId) {
+        const cartItem = cartItems.find((ci) => ci.variantId === item.variantId);
+        if (cartItem) {
+          productId = cartItem.refId;
+        }
+      } else if (item.productId) {
+        productId = item.productId;
+      } else if (item.comboId) {
+        productId = item.comboId;
+      }
+
+      if (productId && finalPlatformVoucherDiscounts[productId]) {
+        const { campaignProductId, inPlatformCampaign, discount, platformVoucherId } = finalPlatformVoucherDiscounts[productId];
+
+        // Chỉ thêm nếu có campaignProductId và (discount > 0 hoặc inPlatformCampaign = true)
+        if (campaignProductId && (discount > 0 || inPlatformCampaign)) {
+          const key = campaignProductId;
+          if (!platformVouchersMap[key]) {
+            platformVouchersMap[key] = {
+              campaignProductId,
+              quantity: 0,
+              platformVoucherId,
+            };
+          }
+          platformVouchersMap[key].quantity += item.quantity;
+        }
       }
     });
 
@@ -750,7 +1197,7 @@ const CheckoutScreen: React.FC = () => {
       (v) => v.campaignProductId && v.quantity > 0,
     );
 
-    return {
+    const payload = {
       items,
       addressId: selectedAddressId,
       message: null,
@@ -758,6 +1205,25 @@ const CheckoutScreen: React.FC = () => {
       platformVouchers: platformVouchers.length > 0 ? platformVouchers : null,
       serviceTypeIds: Object.keys(serviceTypeIds).length > 0 ? serviceTypeIds : null,
     };
+
+    // log.log('[CheckoutScreen] buildCheckoutPayload: Payload built', {
+    //   itemsCount: items.length,
+    //   storeVouchersCount: storeVouchers.length,
+    //   platformVouchersCount: platformVouchers.length,
+    //   serviceTypeIdsCount: Object.keys(serviceTypeIds).length,
+    //   payload: {
+    //     ...payload,
+    //     items: items.map((i) => ({
+    //       type: i.type,
+    //       quantity: i.quantity,
+    //       hasVariant: !!i.variantId,
+    //       hasProduct: !!i.productId,
+    //       hasCombo: !!i.comboId,
+    //     })),
+    //   },
+    // });
+
+    return payload;
   }, [
     selectedAddressId,
     cart,
@@ -765,18 +1231,62 @@ const CheckoutScreen: React.FC = () => {
     appliedStoreVouchers,
     appliedStoreWideVouchers,
     productCache,
-    storeTotals,
     platformVoucherDiscounts,
+    authState.decodedToken?.customerId,
+    authState.accessToken,
   ]);
 
-  // Handle checkout
+  // Handle checkout with validation
   const handleCheckout = useCallback(async () => {
     const customerId = authState.decodedToken?.customerId;
     const accessToken = authState.accessToken;
-    if (!customerId || !accessToken) return;
+    if (!customerId || !accessToken) {
+      // log.log('[CheckoutScreen] handleCheckout: Skipped - No customerId or accessToken');
+      setSnackbarMessage('Vui lòng đăng nhập để tiếp tục');
+      setSnackbarVisible(true);
+      return;
+    }
 
-    const payload = buildCheckoutPayload();
+    // log.log('[CheckoutScreen] handleCheckout: Starting...', {
+    //   paymentMethod,
+    //   customerId,
+    // });
+
+    // Step 1: Validation
+    if (cartItems.length === 0) {
+      // log.log('[CheckoutScreen] handleCheckout: Validation failed - Empty cart');
+      setSnackbarMessage('Giỏ hàng của bạn đang trống.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    if (!selectedAddressId) {
+      // log.log('[CheckoutScreen] handleCheckout: Validation failed - No address');
+      setSnackbarMessage('Vui lòng chọn địa chỉ nhận hàng.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    if (!paymentMethod) {
+      // log.log('[CheckoutScreen] handleCheckout: Validation failed - No payment method');
+      setSnackbarMessage('Vui lòng chọn phương thức thanh toán.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    if (shippingFeeError) {
+      // log.log('[CheckoutScreen] handleCheckout: Validation failed - Shipping fee error');
+      setSnackbarMessage('Không thể tính phí vận chuyển. Vui lòng kiểm tra lại địa chỉ.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    // log.log('[CheckoutScreen] handleCheckout: Validation passed');
+
+    // Step 2: Build payload (async)
+    const payload = await buildCheckoutPayload();
     if (!payload) {
+      // log.log('[CheckoutScreen] handleCheckout: Failed - No payload');
       setSnackbarMessage('Vui lòng chọn địa chỉ giao hàng');
       setSnackbarVisible(true);
       return;
@@ -785,10 +1295,39 @@ const CheckoutScreen: React.FC = () => {
     try {
       setIsSubmitting(true);
       if (paymentMethod === 'COD') {
+        // log.log('[CheckoutScreen] handleCheckout: Submitting COD order...', {
+        //   itemsCount: payload.items.length,
+        //   addressId: payload.addressId,
+        //   items: payload.items.map((i) => ({
+        //     type: i.type,
+        //     quantity: i.quantity,
+        //     hasVariant: !!i.variantId,
+        //     hasProduct: !!i.productId,
+        //     hasCombo: !!i.comboId,
+        //   })),
+        //   storeVouchers: payload.storeVouchers,
+        //   platformVouchers: payload.platformVouchers,
+        //   serviceTypeIds: payload.serviceTypeIds,
+        // });
         const result = await checkoutCod({ customerId, accessToken, payload });
+        // log.log('[CheckoutScreen] handleCheckout: COD order successful', {
+        //   orderId: result.orderId,
+        //   orderCode: result.orderCode,
+        //   totalAmount: result.totalAmount,
+        // });
+
+        // Step 3: Success handling - Clear AsyncStorage
+        try {
+          await AsyncStorage.removeItem(CHECKOUT_SESSION_KEY);
+          log.log('[CheckoutScreen] handleCheckout: Cleared checkout session storage');
+        } catch (storageError) {
+          log.error('[CheckoutScreen] handleCheckout: Failed to clear storage', storageError);
+        }
+
         setSnackbarMessage('Đặt hàng thành công!');
         setSnackbarVisible(true);
-        // Navigate to orders screen
+
+        // Navigate to Profile (orders screen)
         setTimeout(() => {
           // @ts-ignore
           navigation.navigate('Profile');
@@ -797,38 +1336,103 @@ const CheckoutScreen: React.FC = () => {
         // PayOS
         const returnUrl = 'https://audioe-commerce-production.up.railway.app/checkout/success';
         const cancelUrl = 'https://audioe-commerce-production.up.railway.app/checkout/cancel';
+        // log.log('[CheckoutScreen] handleCheckout: Submitting PayOS order...', {
+        //   itemsCount: payload.items.length,
+        //   addressId: payload.addressId,
+        //   returnUrl,
+        //   cancelUrl,
+        //   items: payload.items.map((i) => ({
+        //     type: i.type,
+        //     quantity: i.quantity,
+        //     hasVariant: !!i.variantId,
+        //     hasProduct: !!i.productId,
+        //     hasCombo: !!i.comboId,
+        //   })),
+        //   storeVouchers: payload.storeVouchers,
+        //   platformVouchers: payload.platformVouchers,
+        //   serviceTypeIds: payload.serviceTypeIds,
+        // });
         const result = await checkoutPayOS({
           customerId,
           accessToken,
           payload: { ...payload, returnUrl, cancelUrl },
         });
+        // log.log('[CheckoutScreen] handleCheckout: PayOS order successful', {
+        //   orderId: result.orderId,
+        //   orderCode: result.orderCode,
+        //   checkoutUrl: result.checkoutUrl,
+        // });
+
+        // Step 3: Success handling - Clear AsyncStorage
+        try {
+          await AsyncStorage.removeItem(CHECKOUT_SESSION_KEY);
+          log.log('[CheckoutScreen] handleCheckout: Cleared checkout session storage');
+        } catch (storageError) {
+          log.error('[CheckoutScreen] handleCheckout: Failed to clear storage', storageError);
+        }
+
         // Redirect to PayOS URL
-        // In React Native, you might need to use Linking.openURL or WebBrowser
-        setSnackbarMessage('Đang chuyển đến trang thanh toán...');
-        setSnackbarVisible(true);
+        if (result.checkoutUrl) {
+          const canOpen = await Linking.canOpenURL(result.checkoutUrl);
+          if (canOpen) {
+            await Linking.openURL(result.checkoutUrl);
+            setSnackbarMessage('Đang chuyển đến trang thanh toán...');
+            setSnackbarVisible(true);
+          } else {
+            setSnackbarMessage('Không thể mở trang thanh toán. Vui lòng thử lại.');
+            setSnackbarVisible(true);
+          }
+        } else {
+          setSnackbarMessage('Không nhận được URL thanh toán. Vui lòng thử lại.');
+          setSnackbarVisible(true);
+        }
       }
     } catch (error: any) {
-      console.error('[CheckoutScreen] checkout failed', error);
+      // log.error('[CheckoutScreen] handleCheckout: Failed', {
+      //   status: error?.response?.status,
+      //   message: error?.response?.data?.message || error?.message,
+      //   error,
+      // });
       const message =
         error?.response?.data?.message || 'Không thể đặt hàng. Vui lòng thử lại.';
       setSnackbarMessage(message);
       setSnackbarVisible(true);
     } finally {
       setIsSubmitting(false);
+      // log.log('[CheckoutScreen] handleCheckout: Completed');
     }
-  }, [paymentMethod, buildCheckoutPayload, authState.decodedToken?.customerId, authState.accessToken, navigation]);
+  }, [
+    paymentMethod,
+    buildCheckoutPayload,
+    authState.decodedToken?.customerId,
+    authState.accessToken,
+    navigation,
+    cartItems.length,
+    selectedAddressId,
+    shippingFeeError,
+  ]);
 
   // Handle remove item
   const handleRemoveItem = useCallback(
     async (cartItemId: string) => {
       const customerId = authState.decodedToken?.customerId;
       const accessToken = authState.accessToken;
-      if (!customerId || !accessToken) return;
+      if (!customerId || !accessToken) {
+        // log.log('[CheckoutScreen] handleRemoveItem: Skipped - No customerId or accessToken');
+        return;
+      }
+      // log.log('[CheckoutScreen] handleRemoveItem: Removing item', { cartItemId });
       try {
         await deleteCartItems({ customerId, accessToken, cartItemIds: [cartItemId] });
+        // log.log('[CheckoutScreen] handleRemoveItem: Item removed successfully', { cartItemId });
         await loadData();
       } catch (error: any) {
-        console.error('[CheckoutScreen] remove item failed', error);
+        // log.error('[CheckoutScreen] handleRemoveItem: Failed', {
+        //   cartItemId,
+        //   status: error?.response?.status,
+        //   message: error?.response?.data?.message || error?.message,
+        //   error,
+        // });
         setSnackbarMessage('Không thể xóa sản phẩm. Vui lòng thử lại.');
         setSnackbarVisible(true);
       }
@@ -848,16 +1452,32 @@ const CheckoutScreen: React.FC = () => {
         <Text style={styles.muted}>Chưa có địa chỉ. Vui lòng thêm mới.</Text>
       ) : (
         addresses.map((addr) => (
-          <TouchableOpacity
-            key={addr.id}
-            style={styles.addressRow}
-            onPress={() => setSelectedAddressId(addr.id)}
-          >
+            <TouchableOpacity
+              key={addr.id}
+              style={styles.addressRow}
+              onPress={() => {
+                // log.log('[CheckoutScreen] Address selected (touch)', {
+                //   addressId: addr.id,
+                //   receiverName: addr.receiverName,
+                //   province: addr.province,
+                //   district: addr.district,
+                // });
+                setSelectedAddressId(addr.id);
+              }}
+            >
             <RadioButton
               value={addr.id}
               status={selectedAddressId === addr.id ? 'checked' : 'unchecked'}
               color={ORANGE}
-              onPress={() => setSelectedAddressId(addr.id)}
+              onPress={() => {
+                // log.log('[CheckoutScreen] Address selected', {
+                //   addressId: addr.id,
+                //   receiverName: addr.receiverName,
+                //   province: addr.province,
+                //   district: addr.district,
+                // });
+                setSelectedAddressId(addr.id);
+              }}
             />
             <View style={{ flex: 1 }}>
               <Text style={styles.addressName}>{addr.receiverName}</Text>
@@ -913,25 +1533,37 @@ const CheckoutScreen: React.FC = () => {
       <Text style={styles.sectionTitle}>Phương thức thanh toán</Text>
       <TouchableOpacity
         style={styles.paymentRow}
-        onPress={() => setPaymentMethod('COD')}
+        onPress={() => {
+          // log.log('[CheckoutScreen] Payment method selected: COD');
+          setPaymentMethod('COD');
+        }}
       >
         <RadioButton
           value="COD"
           status={paymentMethod === 'COD' ? 'checked' : 'unchecked'}
           color={ORANGE}
-          onPress={() => setPaymentMethod('COD')}
+          onPress={() => {
+            // log.log('[CheckoutScreen] Payment method selected: COD');
+            setPaymentMethod('COD');
+          }}
         />
         <Text style={styles.paymentLabel}>Thanh toán khi nhận hàng (COD)</Text>
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.paymentRow}
-        onPress={() => setPaymentMethod('PAYOS')}
+        onPress={() => {
+          // log.log('[CheckoutScreen] Payment method selected: PAYOS');
+          setPaymentMethod('PAYOS');
+        }}
       >
         <RadioButton
           value="PAYOS"
           status={paymentMethod === 'PAYOS' ? 'checked' : 'unchecked'}
           color={ORANGE}
-          onPress={() => setPaymentMethod('PAYOS')}
+          onPress={() => {
+            // log.log('[CheckoutScreen] Payment method selected: PAYOS');
+            setPaymentMethod('PAYOS');
+          }}
         />
         <Text style={styles.paymentLabel}>Thanh toán online (PayOS)</Text>
       </TouchableOpacity>

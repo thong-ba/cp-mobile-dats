@@ -129,8 +129,21 @@ const HomeScreen = () => {
         image: item.iconUrl || FALLBACK_CATEGORY_IMAGE,
       }));
       setCategories(mapped);
-    } catch (error) {
-      console.error('fetchCategories error', error);
+    } catch (error: any) {
+      // 405 means method not allowed - API might not support GET or endpoint changed
+      // Silently handle this error to avoid console spam on app start
+      if (error?.response?.status === 405) {
+        // Method not allowed - endpoint might not exist or use different method
+        // Just set empty categories, don't log error
+        setCategories([]);
+        return;
+      }
+      // Only log non-405 errors
+      if (error?.response?.status !== 405) {
+        console.error('fetchCategories error', error);
+      }
+      // Set empty categories on any error to prevent UI issues
+      setCategories([]);
     }
   }, []);
 

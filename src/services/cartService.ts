@@ -83,7 +83,7 @@ export const deleteCartItems = async ({
 };
 
 /**
- * POST /api/v1/customers/{customerId}/cart/checkout/cod
+ * POST /api/v1/customers/{customerId}/cart/checkout-cod
  * Checkout với COD (Cash on Delivery)
  */
 export const checkoutCod = async ({
@@ -93,21 +93,62 @@ export const checkoutCod = async ({
 }: AuthenticatedCustomerRequest & {
   payload: CheckoutCodRequest;
 }): Promise<CheckoutCodResponse['data']> => {
-  const { data } = await httpClient.post<CheckoutCodResponse>(
-    `/v1/customers/${customerId}/cart/checkout/cod`,
-    payload,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
+  const endpoint = `/v1/customers/${customerId}/cart/checkout-cod`;
+  console.log('[CartService] checkoutCod: Request', {
+    customerId,
+    endpoint,
+    payload: {
+      itemsCount: payload.items.length,
+      addressId: payload.addressId,
+      hasStoreVouchers: !!payload.storeVouchers,
+      hasPlatformVouchers: !!payload.platformVouchers,
+      hasServiceTypeIds: !!payload.serviceTypeIds,
     },
-  );
-  return data.data;
+  });
+
+  try {
+    const { data } = await httpClient.post<CheckoutCodResponse>(
+      endpoint,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    console.log('[CartService] checkoutCod: Response', {
+      status: data.status,
+      message: data.message,
+      hasData: !!data.data,
+      dataKeys: data.data ? Object.keys(data.data) : [],
+    });
+
+    // Handle different response formats
+    if (data.data) {
+      return data.data;
+    }
+    // If response is directly the data (unlikely but handle it)
+    if ((data as any).orderId || (data as any).orderCode) {
+      return (data as any) as CheckoutCodResponse['data'];
+    }
+    throw new Error('Invalid response format from checkout API');
+  } catch (error: any) {
+    console.error('[CartService] checkoutCod: Error', {
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      url: error?.config?.url,
+      method: error?.config?.method,
+      message: error?.message,
+      responseData: error?.response?.data,
+    });
+    throw error;
+  }
 };
 
 /**
- * POST /api/v1/customers/{customerId}/cart/checkout/payos
+ * POST /api/v1/payos/checkout?customerId={customerId}
  * Checkout với PayOS
  */
 export const checkoutPayOS = async ({
@@ -117,17 +158,60 @@ export const checkoutPayOS = async ({
 }: AuthenticatedCustomerRequest & {
   payload: CheckoutPayOSRequest;
 }): Promise<CheckoutPayOSResponse['data']> => {
-  const { data } = await httpClient.post<CheckoutPayOSResponse>(
-    `/v1/customers/${customerId}/cart/checkout/payos`,
-    payload,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
+  const endpoint = `/v1/payos/checkout?customerId=${customerId}`;
+  console.log('[CartService] checkoutPayOS: Request', {
+    customerId,
+    endpoint,
+    payload: {
+      itemsCount: payload.items.length,
+      addressId: payload.addressId,
+      hasStoreVouchers: !!payload.storeVouchers,
+      hasPlatformVouchers: !!payload.platformVouchers,
+      hasServiceTypeIds: !!payload.serviceTypeIds,
+      returnUrl: payload.returnUrl,
+      cancelUrl: payload.cancelUrl,
     },
-  );
-  return data.data;
+  });
+
+  try {
+    const { data } = await httpClient.post<CheckoutPayOSResponse>(
+      endpoint,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    console.log('[CartService] checkoutPayOS: Response', {
+      status: data.status,
+      message: data.message,
+      hasData: !!data.data,
+      dataKeys: data.data ? Object.keys(data.data) : [],
+    });
+
+    // Handle different response formats
+    if (data.data) {
+      return data.data;
+    }
+    // If response is directly the data (unlikely but handle it)
+    if ((data as any).checkoutUrl || (data as any).orderId || (data as any).orderCode) {
+      return (data as any) as CheckoutPayOSResponse['data'];
+    }
+    throw new Error('Invalid response format from checkout API');
+  } catch (error: any) {
+    console.error('[CartService] checkoutPayOS: Error', {
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      url: error?.config?.url,
+      method: error?.config?.method,
+      message: error?.message,
+      responseData: error?.response?.data,
+    });
+    throw error;
+  }
 };
 
 

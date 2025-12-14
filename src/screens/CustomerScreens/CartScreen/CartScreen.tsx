@@ -263,7 +263,7 @@ const CartScreen: React.FC = () => {
       {/* Bottom Summary Bar */}
       <View style={styles.summaryBar}>
         <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>Tạm tính (giá gốc):</Text>
+          <Text style={styles.summaryLabel}>Giá gốc:</Text>
           <Text style={styles.summaryValue}>
             {formatCurrencyVND(subtotalBeforePlatform || cart.subtotal)}
           </Text>
