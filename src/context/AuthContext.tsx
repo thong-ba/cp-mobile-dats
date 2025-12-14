@@ -5,7 +5,7 @@ import { DecodedToken, LoginRequest, LoginResponse } from '../types/auth';
 import { CustomerProfile } from '../types/customer';
 import { decodeJwt } from '../utils/jwt';
 
-type AuthState = {
+export type AuthState = {
   accessToken: string | null;
   refreshToken: string | null;
   user: LoginResponse['data']['user'] | null;

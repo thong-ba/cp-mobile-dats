@@ -56,9 +56,10 @@ const ProfileScreen = () => {
       return [];
     }
     return [
-      { label: 'Đơn hàng', value: profile.orderCount, icon: 'shopping-outline' },
-      { label: 'Voucher', value: profile.voucherCount, icon: 'ticket-percent-outline' },
-      { label: 'Điểm', value: profile.loyaltyPoints, icon: 'star-outline' },
+      { label: 'Tổng đơn', value: profile.orderCount || 0, icon: 'shopping-outline' },
+      { label: 'Đơn hủy', value: profile.cancelCount || 0, icon: 'cancel' },
+      { label: 'Đơn trả', value: profile.returnCount || 0, icon: 'package-variant-return' },
+      { label: 'Chưa thanh toán', value: profile.unpaidOrderCount || 0, icon: 'credit-card-off-outline' },
     ];
   }, [profile]);
 
@@ -196,6 +197,8 @@ const ProfileScreen = () => {
                   onPress={() => {
                     if (item.key === 'address') {
                       navigation.navigate('AddressList' as never);
+                    } else if (item.key === 'orders') {
+                      navigation.navigate('Orders' as never);
                     }
                   }}
                 />

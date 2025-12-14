@@ -5,6 +5,8 @@ import { CartScreen } from '../screens/CustomerScreens/CartScreen';
 import { CheckoutScreen } from '../screens/CustomerScreens/CheckoutScreen';
 import { CreateAddressScreen } from '../screens/CustomerScreens/CreateAddressScreen';
 import { EditAddressScreen } from '../screens/CustomerScreens/EditAddressScreen';
+import NotificationsScreen from '../screens/CustomerScreens/NotificationsScreen/NotificationsScreen';
+import OrderScreen from '../screens/CustomerScreens/OrderScreen';
 import ProfileScreen from '../screens/CustomerScreens/ProfileScreen/ProfileScreen';
 import { Cart } from '../types/cart';
 import { CustomerAddress } from '../types/customer';
@@ -16,6 +18,8 @@ export type CustomerStackParamList = {
   EditAddress: { address: CustomerAddress };
   Cart: undefined;
   Checkout: { cart?: Cart } | undefined;
+  Orders: undefined;
+  Notifications: undefined;
 };
 
 const Stack = createNativeStackNavigator<CustomerStackParamList>();
@@ -33,6 +37,8 @@ export default function CustomerStackNavigator() {
       <Stack.Screen name="EditAddress" component={EditAddressScreen} />
       <Stack.Screen name="Cart" component={CartScreen} />
       <Stack.Screen name="Checkout" component={CheckoutScreen} />
+      <Stack.Screen name="Orders" component={OrderScreen} />
+      <Stack.Screen name="Notifications" component={NotificationsScreen} />
     </Stack.Navigator>
   );
 }
