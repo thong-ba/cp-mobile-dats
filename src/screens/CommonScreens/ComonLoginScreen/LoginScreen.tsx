@@ -1,15 +1,15 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Snackbar } from 'react-native-paper';
+import GoogleLoginButton from '../../../components/CommonScreenComponents/GoogleLoginButton';
 import { LoginForm } from '../../../components/CommonScreenComponents/LoginComponents';
 import { useAuth } from '../../../context/AuthContext';
 import { LoginRequest } from '../../../types/auth';
 
 export default function LoginScreen() {
   const navigation = useNavigation();
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successVisible, setSuccessVisible] = useState(false);
@@ -77,10 +77,29 @@ export default function LoginScreen() {
             <View style={styles.divider} />
           </View>
 
-          <TouchableOpacity style={[styles.socialButton, styles.googleButton]} onPress={() => {}}>
-            <MaterialCommunityIcons name="google" size={22} color="#DB4437" />
-            <Text style={[styles.socialText, { color: '#DB4437' }]}>Tiếp tục với Google</Text>
-          </TouchableOpacity>
+          <GoogleLoginButton
+            variant="login"
+            onSuccess={async (tokens) => {
+              try {
+                await loginWithGoogle(tokens);
+                setSuccessVisible(true);
+                if (successTimerRef.current) {
+                  clearTimeout(successTimerRef.current);
+                }
+                successTimerRef.current = setTimeout(() => {
+                  setSuccessVisible(false);
+                  const tabNavigator = navigation.getParent();
+                  tabNavigator?.navigate('Home' as never);
+                }, 2000);
+              } catch (error: any) {
+                setErrorMessage(error?.message || 'Đăng nhập Google thất bại');
+              }
+            }}
+            onError={(error) => {
+              setErrorMessage(error);
+            }}
+            disabled={isSubmitting}
+          />
           <View style={{ marginTop: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 }}>
             <Text style={{ color: '#444' }}>Chưa có tài khoản?</Text>
             <TouchableOpacity onPress={() => navigation.navigate('Register' as never)}>
@@ -129,23 +148,6 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#EFEFEF',
-  },
-  socialButton: {
-    height: 50,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-  googleButton: {},
-  socialText: {
-    fontSize: 15,
-    fontWeight: '700',
   },
   dividerRow: {
     marginVertical: 6,
