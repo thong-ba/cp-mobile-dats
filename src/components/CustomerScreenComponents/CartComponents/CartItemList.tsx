@@ -9,12 +9,13 @@ type Props = {
   items: CartItem[];
   onCartChange?: () => void;
   onRemoveItem?: (cartItemId: string) => void;
+  onQuantityChange?: (cartItemId: string, quantity: number) => void;
 };
 
 const formatCurrencyVND = (value: number) =>
   new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(value);
 
-const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem }) => {
+const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem, onQuantityChange }) => {
   const getPriceDisplay = (item: CartItem) => {
     const originalPrice = item.baseUnitPrice ?? item.unitPrice;
     const hasPlatformPrice =
@@ -25,9 +26,14 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem }) =>
   };
 
   const handleQuantityChange = (cartItemId: string, newQuantity: number) => {
-    // TODO: Implement update cart item quantity API
-    console.log('Update quantity', cartItemId, newQuantity);
-    onCartChange?.();
+    // Clamp quantity between 1 and 99
+    const clamped = Math.max(1, Math.min(newQuantity, 99));
+    if (onQuantityChange) {
+      onQuantityChange(cartItemId, clamped);
+    } else {
+      console.log('Update quantity', cartItemId, clamped);
+      onCartChange?.();
+    }
   };
 
   const handleRemoveItem = (cartItemId: string) => {
@@ -56,26 +62,39 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem }) =>
             {(() => {
               const { priceDisplay, originalPrice, hasDiscount, hasPlatformPrice } =
                 getPriceDisplay(item);
+              
+              // Check if item has active platform campaign
+              const hasActiveCampaign =
+                item.baseUnitPrice != null &&
+                item.platformCampaignPrice != null &&
+                item.platformCampaignPrice !== item.baseUnitPrice &&
+                item.inPlatformCampaign &&
+                !item.campaignUsageExceeded;
+
               return (
                 <View style={styles.priceBlock}>
-                  <Text style={[styles.itemPrice, hasDiscount && styles.discountPrice]}>
-                    {formatCurrencyVND(priceDisplay)}
-                  </Text>
-                  {hasDiscount ? (
-                    <Text style={styles.originalPrice}>{formatCurrencyVND(originalPrice)}</Text>
-                  ) : null}
-                  {item.inPlatformCampaign && hasPlatformPrice ? (
-                    <View
-                      style={[
-                        styles.badge,
-                        item.campaignUsageExceeded ? styles.badgeExpired : null,
-                      ]}
-                    >
-                      <Text style={styles.badgeText}>
-                        {item.campaignUsageExceeded ? 'Hết suất' : 'Campaign'}
+                  {hasActiveCampaign ? (
+                    <>
+                      <Text style={styles.itemPrice}>
+                        {formatCurrencyVND(item.platformCampaignPrice!)}
                       </Text>
+                      <Text style={styles.originalPrice}>
+                        {formatCurrencyVND(item.baseUnitPrice!)}
+                      </Text>
+                      <View style={styles.badge}>
+                        <Text style={styles.badgeText}>Campaign</Text>
+                      </View>
+                    </>
+                  ) : (
+                    <Text style={styles.itemPrice}>
+                      {formatCurrencyVND(item.unitPrice)}
+                    </Text>
+                  )}
+                  {item.campaignUsageExceeded && (
+                    <View style={[styles.badge, styles.badgeExpired]}>
+                      <Text style={styles.badgeText}>Hết suất</Text>
                     </View>
-                  ) : null}
+                  )}
                 </View>
               );
             })()}
@@ -115,11 +134,7 @@ const CartItemList: React.FC<Props> = ({ items, onCartChange, onRemoveItem }) =>
             <View style={styles.lineTotalRow}>
               <Text style={styles.lineTotalLabel}>Thành tiền:</Text>
               <Text style={styles.lineTotalValue}>
-                {formatCurrencyVND(
-                  (item.inPlatformCampaign
-                    ? item.platformCampaignPrice ?? item.unitPrice
-                    : item.baseUnitPrice ?? item.unitPrice) * item.quantity,
-                )}
+                {formatCurrencyVND(item.lineTotal)}
               </Text>
             </View>
           </View>

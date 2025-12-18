@@ -4,6 +4,8 @@ import {
   AddCartItemsResponse,
   Cart,
   CartResponse,
+  UpdateQuantityRequest,
+  UpdateQuantityResponse,
 } from '../types/cart';
 import {
   CheckoutCodRequest,
@@ -58,7 +60,77 @@ export const addItemsToCart = async ({
 };
 
 /**
- * POST /api/v1/customers/{customerId}/cart/delete-items
+ * POST /api/v1/customers/{customerId}/cart/items/quantity-with-vouchers
+ * Cập nhật số lượng sản phẩm trong giỏ hàng (với voucher support)
+ */
+export const updateQuantityWithVouchers = async ({
+  customerId,
+  accessToken,
+  payload,
+}: AuthenticatedCustomerRequest & {
+  payload: UpdateQuantityRequest;
+}): Promise<Cart> => {
+  try {
+    const response = await httpClient.post<UpdateQuantityResponse | CartResponse>(
+      `/v1/customers/${customerId}/cart/items/quantity-with-vouchers`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    const data = response.data;
+
+    // Handle different response formats
+    // Format 1: { status, message, data: Cart } - wrapped response
+    if (data && typeof data === 'object' && 'data' in data && (data as any).data) {
+      const wrappedData = (data as UpdateQuantityResponse).data;
+      if (wrappedData && 'cartId' in wrappedData && 'items' in wrappedData) {
+        return wrappedData;
+      }
+    }
+    
+    // Format 2: Direct Cart object (CartResponse) - same as getCustomerCart
+    if (data && typeof data === 'object' && 'cartId' in data && 'items' in data) {
+      return data as Cart;
+    }
+
+    // Log warning for debugging
+    console.warn('[CartService] updateQuantityWithVouchers: Unexpected response format', {
+      hasData: 'data' in (data as any),
+      hasCartId: 'cartId' in (data as any),
+      hasItems: 'items' in (data as any),
+      hasStatus: 'status' in (data as any),
+      keys: data ? Object.keys(data as any) : [],
+      responseKeys: response ? Object.keys(response) : [],
+    });
+
+    // Fallback: try to extract from any nested structure
+    // @ts-ignore
+    const fallback = (data as any)?.data ?? data;
+    if (fallback && typeof fallback === 'object' && 'cartId' in fallback) {
+      return fallback as Cart;
+    }
+
+    throw new Error('Invalid response format from updateQuantityWithVouchers API');
+  } catch (error: any) {
+    console.error('[CartService] updateQuantityWithVouchers: Error', {
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      url: error?.config?.url,
+      method: error?.config?.method,
+      message: error?.message,
+      responseData: error?.response?.data,
+    });
+    throw error;
+  }
+};
+
+/**
+ * DELETE /api/v1/customers/{customerId}/cart/items
  * Xóa các item khỏi giỏ hàng
  */
 export const deleteCartItems = async ({

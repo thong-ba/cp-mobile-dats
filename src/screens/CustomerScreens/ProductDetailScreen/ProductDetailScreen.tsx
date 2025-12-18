@@ -17,8 +17,13 @@ import {
 import { Chip, Snackbar } from 'react-native-paper';
 import { useAuth } from '../../../context/AuthContext';
 import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
-import { addItemsToCart } from '../../../services/cartService';
+import {
+  addItemsToCart,
+  getCustomerCart,
+  updateQuantityWithVouchers,
+} from '../../../services/cartService';
 import { getProductById, getProductVouchers } from '../../../services/productService';
+import { CartItem } from '../../../types/cart';
 import { PlatformCampaign, PlatformVoucherItem, ProductDetail } from '../../../types/product';
 
 const { width } = Dimensions.get('window');
@@ -177,31 +182,66 @@ const ProductDetailScreen: React.FC = () => {
     try {
       setIsAddingToCart(true);
 
-      // Prepare request payload based on product type
-      // Logic:
-      // - Nếu có variant: gửi variantId, productId và comboId để trống
-      // - Nếu có combo: gửi comboId, productId và variantId để trống
-      // - Nếu không có variant và combo: chỉ gửi productId, variantId và comboId để trống
-      const items = [
-        {
-          type: 'PRODUCT' as const,
-          productId:
-            product.variants && product.variants.length > 0
-              ? ''
-              : selectedComboId
-              ? ''
-              : product.productId,
-          variantId: selectedVariantId || '',
-          comboId: selectedComboId || '',
-          quantity: 1,
-        },
-      ];
+      // Step 1: Load current cart to check if item already exists
+      let existingCartItem = null;
+      try {
+        const currentCart = await getCustomerCart({ customerId, accessToken });
+        
+        // Find existing item with same productId/variantId
+        existingCartItem = currentCart.items.find((item: CartItem) => {
+          // Match by variantId if both have variantId
+          if (selectedVariantId && item.variantId) {
+            return item.variantId === selectedVariantId && item.refId === product.productId;
+          }
+          // Match by productId if no variant
+          if (!selectedVariantId && !item.variantId) {
+            return item.refId === product.productId;
+          }
+          return false;
+        });
+      } catch (error) {
+        console.warn('[ProductDetailScreen] Failed to load cart, will add new item', error);
+        // Continue to add new item if cart load fails
+      }
 
-      await addItemsToCart({
-        customerId,
-        accessToken,
-        payload: { items },
-      });
+      // Step 2: If item exists, update quantity; otherwise add new item
+      if (existingCartItem) {
+        // Item already exists, update quantity
+        const newQuantity = existingCartItem.quantity + 1;
+        await updateQuantityWithVouchers({
+          customerId,
+          accessToken,
+          payload: {
+            cartItemId: existingCartItem.cartItemId,
+            quantity: Math.min(newQuantity, 99), // Clamp to max 99
+            storeVouchers: null,
+            platformVouchers: null,
+            serviceTypeIds: null,
+          },
+        });
+      } else {
+        // Item doesn't exist, add new item
+        const items = [
+          {
+            type: 'PRODUCT' as const,
+            productId:
+              product.variants && product.variants.length > 0
+                ? ''
+                : selectedComboId
+                ? ''
+                : product.productId,
+            variantId: selectedVariantId || '',
+            comboId: selectedComboId || '',
+            quantity: 1,
+          },
+        ];
+
+        await addItemsToCart({
+          customerId,
+          accessToken,
+          payload: { items },
+        });
+      }
 
       // Start animation
       startAddToCartAnimation();

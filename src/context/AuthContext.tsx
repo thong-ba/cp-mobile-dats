@@ -156,9 +156,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    setAuthState(initialState);
-    await clearPersistedAuthState();
-    console.log('[AuthContext] logout success');
+    try {
+      setAuthState(initialState);
+      await clearPersistedAuthState();
+      console.log('[AuthContext] logout success');
+    } catch (error) {
+      // Even if clearing storage fails, reset state
+      setAuthState(initialState);
+      console.warn('[AuthContext] logout error (state cleared anyway):', error);
+    }
   };
 
   const value = useMemo<AuthContextValue>(

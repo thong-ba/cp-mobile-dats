@@ -1,4 +1,4 @@
-import { CommonActions, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar, Button, Card, Chip, Divider, List, Snackbar, Text, useTheme } from 'react-native-paper';
@@ -72,28 +72,22 @@ const ProfileScreen = () => {
     [],
   );
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     console.log('[ProfileScreen] logout requested');
     setLogoutSnackbarVisible(true);
     if (logoutTimerRef.current) {
       clearTimeout(logoutTimerRef.current);
     }
-    logoutTimerRef.current = setTimeout(async () => {
+    try {
+      await logout();
+      console.log('[ProfileScreen] logout succeeded');
+      // ProfileTab will automatically switch to AuthStackNavigator 
+      // when isAuthenticated becomes false, so no need to reset navigation
       setLogoutSnackbarVisible(false);
-      try {
-        await logout();
-        console.log('[ProfileScreen] logout succeeded');
-        const parentNavigator = navigation.getParent();
-        parentNavigator?.dispatch(
-          CommonActions.reset({
-            index: 0,
-            routes: [{ name: 'Home' as never }],
-          }),
-        );
-      } catch (error) {
-        console.log('[ProfileScreen] logout failed', error);
-      }
-    }, 3000);
+    } catch (error) {
+      console.log('[ProfileScreen] logout failed', error);
+      setLogoutSnackbarVisible(false);
+    }
   };
 
   return (
@@ -127,21 +121,23 @@ const ProfileScreen = () => {
                 )}
           </View>
         </View>
-            {isAuthenticated && profile && (
+            {isAuthenticated && (
               <>
-                <View style={styles.chipRow}>
-                  {quickStats.map((stat) => (
-                    <Chip
-                      key={stat.label}
-                      icon={stat.icon as any}
-                      elevated
-                      style={styles.chip}
-                      textStyle={{ fontWeight: '700' }}
-                    >
-                      {stat.value} {stat.label}
-                    </Chip>
-          ))}
-        </View>
+                {profile && (
+                  <View style={styles.chipRow}>
+                    {quickStats.map((stat) => (
+                      <Chip
+                        key={stat.label}
+                        icon={stat.icon as any}
+                        elevated
+                        style={styles.chip}
+                        textStyle={{ fontWeight: '700' }}
+                      >
+                        {stat.value} {stat.label}
+                      </Chip>
+                    ))}
+                  </View>
+                )}
                 <Button
                   mode="contained"
                   icon="logout"
@@ -151,6 +147,19 @@ const ProfileScreen = () => {
                   Đăng xuất
                 </Button>
               </>
+            )}
+            {!isAuthenticated && (
+              <Button
+                mode="contained"
+                icon="account-plus"
+                onPress={() => {
+                  // Navigate to Register screen
+                  navigation.navigate('Register' as never);
+                }}
+                style={styles.loginButton}
+              >
+                Tạo tài khoản
+              </Button>
             )}
           </Card.Content>
         </Card>
@@ -259,6 +268,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF3EB',
   },
   logoutButton: {
+    marginTop: 16,
+    borderRadius: 10,
+  },
+  loginButton: {
     marginTop: 16,
     borderRadius: 10,
   },

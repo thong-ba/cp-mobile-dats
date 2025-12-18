@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -13,7 +13,11 @@ import {
 import { Button } from 'react-native-paper';
 import { CartItemList } from '../../../components/CustomerScreenComponents/CartComponents';
 import { useAuth } from '../../../context/AuthContext';
-import { deleteCartItems, getCustomerCart } from '../../../services/cartService';
+import {
+  deleteCartItems,
+  getCustomerCart,
+  updateQuantityWithVouchers,
+} from '../../../services/cartService';
 import { Cart } from '../../../types/cart';
 
 const ORANGE = '#FF6A00';
@@ -28,6 +32,8 @@ const CartScreen: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Selection state: null = all selected (default), Set<string> = explicit selection
+  const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null);
 
   // Check authentication when screen is focused
   useEffect(() => {
@@ -83,6 +89,70 @@ const CartScreen: React.FC = () => {
     [authState.accessToken, authState.decodedToken?.customerId],
   );
 
+  const handleUpdateQuantity = useCallback(
+    async (cartItemId: string, quantity: number) => {
+      const customerId = authState.decodedToken?.customerId;
+      const accessToken = authState.accessToken;
+      if (!customerId || !accessToken) return;
+      try {
+        setIsLoading(true);
+        setErrorMessage(null);
+        const updatedCart = await updateQuantityWithVouchers({
+          customerId,
+          accessToken,
+          payload: {
+            cartItemId,
+            quantity: Math.max(1, Math.min(quantity, 99)), // Clamp between 1-99
+            storeVouchers: null,
+            platformVouchers: null,
+            serviceTypeIds: null,
+          },
+        });
+
+        // Validate response before setting cart
+        if (!updatedCart) {
+          console.error('[CartScreen] updateQuantity: Response is null/undefined');
+          // Reload cart instead of setting invalid data
+          await loadCart(true);
+          return;
+        }
+
+        if (!Array.isArray(updatedCart.items)) {
+          console.error('[CartScreen] updateQuantity: Invalid items array', {
+            cartId: updatedCart.cartId,
+            items: updatedCart.items,
+            itemsType: typeof updatedCart.items,
+          });
+          // Reload cart instead of setting invalid data
+          await loadCart(true);
+          return;
+        }
+
+        console.log('[CartScreen] updateQuantity success', {
+          cartId: updatedCart.cartId,
+          itemsCount: updatedCart.items.length,
+          subtotal: updatedCart.subtotal,
+          grandTotal: updatedCart.grandTotal,
+        });
+
+        // Only update cart if we have valid data
+        setCart(updatedCart);
+      } catch (error: any) {
+        console.error('[CartScreen] update quantity failed', error);
+        const message =
+          error?.response?.status === 401
+            ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+            : error?.response?.data?.message || 'Không thể cập nhật số lượng. Vui lòng thử lại.';
+        setErrorMessage(message);
+        // Reload cart to get latest state
+        await loadCart(true);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [authState.accessToken, authState.decodedToken?.customerId, loadCart],
+  );
+
   const handleRemoveItem = useCallback(
     async (cartItemId: string) => {
       const customerId = authState.decodedToken?.customerId;
@@ -90,12 +160,19 @@ const CartScreen: React.FC = () => {
       if (!customerId || !accessToken) return;
       try {
         setIsLoading(true);
-        await deleteCartItems({
+        setErrorMessage(null);
+        const updatedCart = await deleteCartItems({
           customerId,
           accessToken,
           cartItemIds: [cartItemId],
         });
-        await loadCart(true);
+        setCart(updatedCart);
+        // Clean up selection if item was selected
+        if (selectedIds) {
+          const newSelected = new Set(selectedIds);
+          newSelected.delete(cartItemId);
+          setSelectedIds(newSelected.size > 0 ? newSelected : null);
+        }
       } catch (error: any) {
         console.error('[CartScreen] delete item failed', error);
         const message =
@@ -107,7 +184,7 @@ const CartScreen: React.FC = () => {
         setIsLoading(false);
       }
     },
-    [authState.accessToken, authState.decodedToken?.customerId],
+    [authState.accessToken, authState.decodedToken?.customerId, selectedIds],
   );
 
   useFocusEffect(
@@ -119,14 +196,71 @@ const CartScreen: React.FC = () => {
     }, [loadCart, isAuthenticated]),
   );
 
-  // Poll cart every 10s when authenticated
+  // Poll cart every 10s when authenticated (but not while updating)
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || isLoading) return;
     const id = setInterval(() => {
-      loadCart(true);
+      // Only poll if not currently loading/updating
+      if (!isLoading) {
+        loadCart(true);
+      }
     }, 10000);
     return () => clearInterval(id);
-  }, [isAuthenticated, loadCart]);
+  }, [isAuthenticated, isLoading, loadCart]);
+
+  // Clean up selectedIds when cart items change
+  useEffect(() => {
+    if (selectedIds && cart?.items) {
+      const currentItemIds = new Set(cart.items.map(item => item.cartItemId));
+      const filtered = new Set(
+        Array.from(selectedIds).filter(id => currentItemIds.has(id))
+      );
+      if (filtered.size !== selectedIds.size) {
+        setSelectedIds(filtered.size > 0 ? filtered : null);
+      }
+    }
+  }, [cart?.items, selectedIds]);
+
+  // Computed: Selected items
+  const selectedItems = useMemo(() => {
+    if (!cart?.items) return [];
+    return selectedIds === null
+      ? cart.items
+      : cart.items.filter(item => selectedIds.has(item.cartItemId));
+  }, [cart?.items, selectedIds]);
+
+  // Computed: Price calculations
+  const priceCalculations = useMemo(() => {
+    if (!selectedItems.length) {
+      return {
+        baseSubtotal: 0,
+        currentSubtotal: 0,
+        platformDiscountTotal: 0,
+        total: 0,
+      };
+    }
+
+    const baseSubtotal = selectedItems.reduce((sum, item) => {
+      const base = item.baseUnitPrice ?? item.unitPrice;
+      return sum + base * item.quantity;
+    }, 0);
+
+    const currentSubtotal = selectedItems.reduce(
+      (sum, item) => sum + item.unitPrice * item.quantity,
+      0
+    );
+
+    const platformDiscountTotal = Math.max(0, baseSubtotal - currentSubtotal);
+    const otherDiscount = cart?.discountTotal ?? 0;
+    const total = Math.max(0, currentSubtotal - otherDiscount);
+
+    return {
+      baseSubtotal,
+      currentSubtotal,
+      platformDiscountTotal,
+      total,
+    };
+  }, [selectedItems, cart?.discountTotal]);
 
   // Show login required message if not authenticated
   if (!isAuthenticated) {
@@ -222,21 +356,7 @@ const CartScreen: React.FC = () => {
     );
   }
 
-  // Derived totals (backend already includes platform discounts in unitPrice/lineTotal)
-  const subtotalBeforePlatform = cart.items.reduce((sum, item) => {
-    const base = item.baseUnitPrice ?? item.unitPrice;
-    return sum + base * item.quantity;
-  }, 0);
-  const subtotalAfterPlatform = cart.items.reduce((sum, item) => {
-    const originalPrice = item.baseUnitPrice ?? item.unitPrice;
-    const hasPlatformPrice =
-      item.platformCampaignPrice !== null && item.platformCampaignPrice !== undefined;
-    const priceDisplay = hasPlatformPrice ? item.platformCampaignPrice! : originalPrice;
-    return sum + priceDisplay * item.quantity;
-  }, 0);
-  const platformDiscount = Math.max(0, subtotalBeforePlatform - subtotalAfterPlatform);
-  const otherDiscount = cart.discountTotal ?? 0; // voucher/khác từ backend nếu có
-  const total = Math.max(0, subtotalAfterPlatform - otherDiscount);
+  const { baseSubtotal, currentSubtotal, platformDiscountTotal, total } = priceCalculations;
 
   return (
     <View style={styles.container}>
@@ -257,7 +377,12 @@ const CartScreen: React.FC = () => {
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={() => loadCart(true)} />}
       >
-        <CartItemList items={cart.items} onCartChange={loadCart} onRemoveItem={handleRemoveItem} />
+        <CartItemList
+          items={cart.items}
+          onCartChange={loadCart}
+          onRemoveItem={handleRemoveItem}
+          onQuantityChange={handleUpdateQuantity}
+        />
       </ScrollView>
 
       {/* Bottom Summary Bar */}
@@ -265,14 +390,14 @@ const CartScreen: React.FC = () => {
         <View style={styles.summaryRow}>
           <Text style={styles.summaryLabel}>Giá gốc:</Text>
           <Text style={styles.summaryValue}>
-            {formatCurrencyVND(subtotalBeforePlatform || cart.subtotal)}
+            {formatCurrencyVND(baseSubtotal || cart.subtotal)}
           </Text>
         </View>
-        {platformDiscount > 0 && (
+        {platformDiscountTotal > 0 && (
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Giảm nền tảng:</Text>
             <Text style={[styles.summaryValue, styles.discountValue]}>
-              -{formatCurrencyVND(platformDiscount)}
+              -{formatCurrencyVND(platformDiscountTotal)}
             </Text>
           </View>
         )}
@@ -297,8 +422,9 @@ const CartScreen: React.FC = () => {
           style={styles.checkoutButton}
           contentStyle={styles.checkoutButtonContent}
           labelStyle={styles.checkoutButtonLabel}
+          disabled={selectedItems.length === 0}
         >
-          Thanh toán
+          Thanh toán {selectedItems.length > 0 ? `(${selectedItems.length})` : ''}
         </Button>
       </View>
     </View>

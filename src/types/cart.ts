@@ -2,7 +2,7 @@ export type CartStatus = 'ACTIVE' | 'ABANDONED' | 'COMPLETED';
 
 export type CartItem = {
   cartItemId: string;
-  type: 'PRODUCT' | 'VOUCHER' | 'OTHER';
+  type: 'PRODUCT' | 'VOUCHER' | 'COMBO' | 'OTHER';
   refId: string;
   name: string;
   image: string;
@@ -14,13 +14,13 @@ export type CartItem = {
   campaignUsageExceeded?: boolean;
   campaignRemaining?: number | null;
   lineTotal: number;
-  originProvinceCode: string;
-  originDistrictCode: string;
-  originWardCode: string;
-  variantId: string | null;
-  variantOptionName: string | null;
-  variantOptionValue: string | null;
-  variantUrl: string | null;
+  originProvinceCode?: string;
+  originDistrictCode?: string;
+  originWardCode?: string;
+  variantId?: string | null;
+  variantOptionName?: string | null;
+  variantOptionValue?: string | null;
+  variantUrl?: string | null;
 };
 
 export type Cart = {
@@ -48,6 +48,20 @@ export type AddCartItemsRequest = {
 };
 
 export type AddCartItemsResponse = {
+  status: number;
+  message: string;
+  data: Cart;
+};
+
+export type UpdateQuantityRequest = {
+  cartItemId: string;
+  quantity: number;
+  storeVouchers?: Record<string, any> | null;
+  platformVouchers?: Record<string, any> | null;
+  serviceTypeIds?: Record<string, number> | null;
+};
+
+export type UpdateQuantityResponse = {
   status: number;
   message: string;
   data: Cart;
