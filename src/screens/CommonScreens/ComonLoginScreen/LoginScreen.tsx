@@ -81,11 +81,6 @@ export default function LoginScreen() {
             <MaterialCommunityIcons name="google" size={22} color="#DB4437" />
             <Text style={[styles.socialText, { color: '#DB4437' }]}>Tiếp tục với Google</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity style={[styles.socialButton, styles.githubButton]} onPress={() => {}}>
-            <MaterialCommunityIcons name="github" size={22} color="#000000" />
-            <Text style={[styles.socialText, { color: '#000000' }]}>Tiếp tục với GitHub</Text>
-          </TouchableOpacity>
           <View style={{ marginTop: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 }}>
             <Text style={{ color: '#444' }}>Chưa có tài khoản?</Text>
             <TouchableOpacity onPress={() => navigation.navigate('Register' as never)}>
@@ -148,7 +143,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   googleButton: {},
-  githubButton: {},
   socialText: {
     fontSize: 15,
     fontWeight: '700',

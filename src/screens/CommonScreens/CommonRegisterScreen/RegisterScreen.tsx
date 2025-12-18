@@ -17,7 +17,7 @@ export default function RegisterScreen() {
   const handleSubmit = useCallback(
     async (payload: RegisterRequest) => {
       setIsSubmitting(true);
-      setErrorMessage(null);
+      setErrorMessage(null); // Clear error message when submitting
       try {
         await registerCustomer(payload);
         setSuccessVisible(true);
@@ -31,11 +31,27 @@ export default function RegisterScreen() {
       } catch (error: unknown) {
         let message = 'Không thể đăng ký. Vui lòng thử lại.';
         if (typeof error === 'object' && error !== null) {
-          const axiosMessage = (error as { response?: { data?: { message?: string } } })?.response?.data
-            ?.message;
-          const genericMessage = (error as { message?: string }).message;
-          if (axiosMessage) message = axiosMessage;
-          else if (genericMessage) message = genericMessage;
+          const errorResponse = error as { response?: { data?: { message?: string; status?: number } } };
+          const axiosMessage = errorResponse?.response?.data?.message;
+          const status = errorResponse?.response?.data?.status;
+
+          if (axiosMessage) {
+            // Xử lý các lỗi cụ thể từ API
+            if (status === 409) {
+              if (axiosMessage.toLowerCase().includes('email')) {
+                message = 'Email này đã được sử dụng. Vui lòng chọn email khác.';
+              } else if (axiosMessage.toLowerCase().includes('phone') || axiosMessage.toLowerCase().includes('số điện thoại')) {
+                message = 'Số điện thoại này đã được sử dụng. Vui lòng chọn số điện thoại khác.';
+              } else {
+                message = axiosMessage;
+              }
+            } else {
+              message = axiosMessage;
+            }
+          } else {
+            const genericMessage = (error as { message?: string }).message;
+            if (genericMessage) message = genericMessage;
+          }
         }
         setErrorMessage(message);
       } finally {
@@ -63,11 +79,13 @@ export default function RegisterScreen() {
           </View>
 
           <View style={styles.card}>
-            <RegisterForm hideTitle onSubmit={handleSubmit} />
-
-            {errorMessage ? (
-              <Text style={styles.errorText}>{errorMessage}</Text>
-            ) : null}
+            <RegisterForm
+              hideTitle
+              onSubmit={handleSubmit}
+              isSubmitting={isSubmitting}
+              errorMessage={errorMessage}
+              onFieldChange={() => setErrorMessage(null)}
+            />
 
             <View style={styles.dividerRow}>
               <View style={styles.divider} />
@@ -78,11 +96,6 @@ export default function RegisterScreen() {
             <TouchableOpacity style={[styles.socialButton, styles.googleButton]} onPress={() => {}}>
               <MaterialCommunityIcons name="google" size={22} color="#DB4437" />
               <Text style={[styles.socialText, { color: '#DB4437' }]}>Đăng ký với Google</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.socialButton, styles.githubButton]} onPress={() => {}}>
-              <MaterialCommunityIcons name="github" size={22} color="#000000" />
-              <Text style={[styles.socialText, { color: '#000000' }]}>Đăng ký với GitHub</Text>
             </TouchableOpacity>
             <View
               style={{
@@ -150,7 +163,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   googleButton: {},
-  githubButton: {},
   socialText: {
     fontSize: 15,
     fontWeight: '700',
