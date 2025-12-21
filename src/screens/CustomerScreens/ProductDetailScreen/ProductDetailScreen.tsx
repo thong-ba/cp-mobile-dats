@@ -24,8 +24,10 @@ import {
   updateQuantityWithVouchers,
 } from '../../../services/cartService';
 import { getProductById, getProductVouchers } from '../../../services/productService';
+import { getProductReviews } from '../../../services/reviewService';
 import { CartItem } from '../../../types/cart';
 import { PlatformCampaign, ProductDetail, ProductVariant } from '../../../types/product';
+import { Review } from '../../../types/review';
 import { cleanHtmlContent } from '../../../utils/htmlUtils';
 import { calculateProductPrice } from '../../../utils/productPriceCalculator';
 
@@ -36,6 +38,15 @@ type ProductDetailRouteProp = RouteProp<ProductStackParamList, 'ProductDetail'>;
 
 const formatCurrencyVND = (value: number) =>
   new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(value);
+
+const formatCustomerName = (name: string): string => {
+  if (!name || name.length <= 4) {
+    return name; // Nếu tên quá ngắn, hiển thị nguyên
+  }
+  const firstTwo = name.substring(0, 2);
+  const lastTwo = name.substring(name.length - 2);
+  return `${firstTwo}...${lastTwo}`;
+};
 
 const ProductDetailScreen: React.FC = () => {
   const navigation = useNavigation();
@@ -58,6 +69,12 @@ const ProductDetailScreen: React.FC = () => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [showAnimation, setShowAnimation] = useState(false);
   const [cartItemsCount, setCartItemsCount] = useState(0);
+  const { isAuthenticated } = useAuth();
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [isLoadingReviews, setIsLoadingReviews] = useState(false);
+  const [reviewsPage, setReviewsPage] = useState(0);
+  const [reviewsTotalPages, setReviewsTotalPages] = useState(0);
+  const [hasMoreReviews, setHasMoreReviews] = useState(true);
   
   // Animation refs
   const animatedValue = useRef(new Animated.Value(0)).current;
@@ -146,6 +163,78 @@ const ProductDetailScreen: React.FC = () => {
   useEffect(() => {
     loadProduct();
   }, [loadProduct]);
+
+  // Load cart count
+  const loadCartCount = useCallback(async () => {
+    const customerId = authState.decodedToken?.customerId;
+    const accessToken = authState.accessToken;
+
+    if (!customerId || !accessToken || !isAuthenticated) {
+      setCartItemsCount(0);
+      return;
+    }
+
+    try {
+      const cart = await getCustomerCart({ customerId, accessToken });
+      const count = cart?.items?.length ?? 0;
+      setCartItemsCount(count);
+    } catch (error) {
+      console.error('[ProductDetailScreen] Failed to load cart count:', error);
+      setCartItemsCount(0);
+    }
+  }, [authState.decodedToken?.customerId, authState.accessToken, isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadCartCount();
+      // Reload cart count after adding to cart
+      const intervalId = setInterval(() => {
+        loadCartCount();
+      }, 30000);
+      return () => clearInterval(intervalId);
+    } else {
+      setCartItemsCount(0);
+    }
+  }, [isAuthenticated, loadCartCount]);
+
+  // Load reviews
+  const loadReviews = useCallback(
+    async (pageNum: number = 0, append: boolean = false) => {
+      if (!productId) return;
+
+      try {
+        setIsLoadingReviews(true);
+        const response = await getProductReviews(productId, {
+          page: pageNum,
+          size: 10,
+        });
+
+        if (append) {
+          setReviews((prev) => [...prev, ...response.content]);
+        } else {
+          setReviews(response.content);
+        }
+
+        setReviewsPage(response.number);
+        setReviewsTotalPages(response.totalPages);
+        setHasMoreReviews(!response.last);
+      } catch (error) {
+        console.error('[ProductDetailScreen] Failed to load reviews:', error);
+        if (!append) {
+          setReviews([]);
+        }
+      } finally {
+        setIsLoadingReviews(false);
+      }
+    },
+    [productId],
+  );
+
+  useEffect(() => {
+    if (productId) {
+      loadReviews(0, false);
+    }
+  }, [productId, loadReviews]);
 
   // Calculate pricing using utility function (must be before early returns)
   const pricing = useMemo(() => {
@@ -358,6 +447,9 @@ const ProductDetailScreen: React.FC = () => {
           payload: { items },
         });
       }
+
+      // Reload cart count after adding
+      await loadCartCount();
 
       // Start animation
       startAddToCartAnimation();
@@ -573,6 +665,14 @@ const ProductDetailScreen: React.FC = () => {
                 : 'Hết hàng'}
             </Text>
           </View>
+
+          {/* View Count */}
+          {product.viewCount !== undefined && product.viewCount !== null && (
+            <View style={styles.stockRow}>
+              <MaterialCommunityIcons name="eye-outline" size={18} color="#666" />
+              <Text style={styles.stockText}>{product.viewCount} lượt xem</Text>
+            </View>
+          )}
         </View>
 
         {/* Variants Selector */}
@@ -671,20 +771,37 @@ const ProductDetailScreen: React.FC = () => {
             <Text style={styles.detailLabel}>Thương hiệu:</Text>
             <Text style={styles.detailValue}>{product.brandName || 'N/A'}</Text>
           </View>
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Danh mục:</Text>
-            <Text style={styles.detailValue}>{product.categoryName}</Text>
-          </View>
+          {product.categories && product.categories.length > 0 ? (
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Danh mục:</Text>
+              <Text style={styles.detailValue}>
+                {product.categories.map((cat) => cat.categoryName).join(', ')}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Danh mục:</Text>
+              <Text style={styles.detailValue}>{product.categoryName || 'N/A'}</Text>
+            </View>
+          )}
           {product.model && (
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Model:</Text>
               <Text style={styles.detailValue}>{product.model}</Text>
             </View>
           )}
-          {product.color && (
+          {(product.color || (product.variants && product.variants.length > 0 && product.variants.some((v) => v.optionName === 'Màu sắc' || v.optionName === 'Màu'))) && (
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Màu sắc:</Text>
-              <Text style={styles.detailValue}>{product.color}</Text>
+              <Text style={styles.detailValue}>
+                {product.color ||
+                  (product.variants && product.variants.length > 0
+                    ? product.variants
+                        .filter((v) => v.optionName === 'Màu sắc' || v.optionName === 'Màu')
+                        .map((v) => v.optionValue)
+                        .join(', ')
+                    : 'N/A')}
+              </Text>
             </View>
           )}
           {product.material && (
@@ -720,52 +837,73 @@ const ProductDetailScreen: React.FC = () => {
         </View>
 
         {/* Audio Specifications */}
-        {(product.frequencyResponse ||
-          product.sensitivity ||
-          product.impedance ||
-          product.powerHandling ||
-          product.connectionType ||
-          product.voltageInput) && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Thông số kỹ thuật âm thanh</Text>
-            {product.frequencyResponse && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Dải tần số:</Text>
-                <Text style={styles.detailValue}>{product.frequencyResponse}</Text>
+        {(() => {
+          // Map attributeValues to product fields if available
+          const getAttributeValue = (attributeName: string): string | null => {
+            if (!product.attributeValues || product.attributeValues.length === 0) return null;
+            const attr = product.attributeValues.find((a) => a.attributeName === attributeName);
+            return attr ? String(attr.value) : null;
+          };
+
+          const frequencyResponse = product.frequencyResponse || getAttributeValue('frequencyResponse');
+          const sensitivity = product.sensitivity || getAttributeValue('sensitivity');
+          const impedance = product.impedance || getAttributeValue('impedance');
+          const powerHandling = product.powerHandling || getAttributeValue('powerHandling');
+          const connectionType = product.connectionType || getAttributeValue('connectionType');
+          const voltageInput = product.voltageInput || getAttributeValue('voltageInput');
+
+          if (
+            frequencyResponse ||
+            sensitivity ||
+            impedance ||
+            powerHandling ||
+            connectionType ||
+            voltageInput
+          ) {
+            return (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Thông số kỹ thuật âm thanh</Text>
+                {frequencyResponse && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Dải tần số:</Text>
+                    <Text style={styles.detailValue}>{frequencyResponse}</Text>
+                  </View>
+                )}
+                {sensitivity && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Độ nhạy:</Text>
+                    <Text style={styles.detailValue}>{sensitivity}</Text>
+                  </View>
+                )}
+                {impedance && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Trở kháng:</Text>
+                    <Text style={styles.detailValue}>{impedance}</Text>
+                  </View>
+                )}
+                {powerHandling && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Công suất:</Text>
+                    <Text style={styles.detailValue}>{powerHandling}</Text>
+                  </View>
+                )}
+                {connectionType && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Loại kết nối:</Text>
+                    <Text style={styles.detailValue}>{connectionType}</Text>
+                  </View>
+                )}
+                {voltageInput && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Điện áp đầu vào:</Text>
+                    <Text style={styles.detailValue}>{voltageInput}</Text>
+                  </View>
+                )}
               </View>
-            )}
-            {product.sensitivity && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Độ nhạy:</Text>
-                <Text style={styles.detailValue}>{product.sensitivity}</Text>
-              </View>
-            )}
-            {product.impedance && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Trở kháng:</Text>
-                <Text style={styles.detailValue}>{product.impedance}</Text>
-              </View>
-            )}
-            {product.powerHandling && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Công suất:</Text>
-                <Text style={styles.detailValue}>{product.powerHandling}</Text>
-              </View>
-            )}
-            {product.connectionType && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loại kết nối:</Text>
-                <Text style={styles.detailValue}>{product.connectionType}</Text>
-              </View>
-            )}
-            {product.voltageInput && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Điện áp đầu vào:</Text>
-                <Text style={styles.detailValue}>{product.voltageInput}</Text>
-              </View>
-            )}
-          </View>
-        )}
+            );
+          }
+          return null;
+        })()}
 
         {/* Speaker Specifications - Only for Loa category */}
         {product.categoryName === 'Loa' &&
@@ -817,81 +955,109 @@ const ProductDetailScreen: React.FC = () => {
         )}
 
         {/* Headphone Specifications - Only for Tai Nghe category */}
-        {product.categoryName === 'Tai Nghe' &&
-          (product.headphoneType ||
-            product.compatibleDevices ||
+        {(() => {
+          const isHeadphoneCategory =
+            product.categoryName === 'Tai Nghe' ||
+            (product.categories &&
+              product.categories.some((cat) => cat.categoryName === 'Tai Nghe'));
+
+          if (!isHeadphoneCategory) return null;
+
+          // Map attributeValues to product fields if available
+          const getAttributeValue = (attributeName: string): string | null => {
+            if (!product.attributeValues || product.attributeValues.length === 0) return null;
+            const attr = product.attributeValues.find((a) => a.attributeName === attributeName);
+            return attr ? String(attr.value) : null;
+          };
+
+          const headphoneType = product.headphoneType || getAttributeValue('headphoneType');
+          const compatibleDevices =
+            product.compatibleDevices || getAttributeValue('compatibleDevices');
+          const headphoneFeatures =
+            product.headphoneFeatures || getAttributeValue('headphoneFeatures');
+          const batteryCapacity =
+            product.batteryCapacity || getAttributeValue('batteryCapacity');
+
+          if (
+            headphoneType ||
+            compatibleDevices ||
             product.isSportsModel !== undefined ||
-            product.headphoneFeatures ||
-            product.batteryCapacity ||
+            headphoneFeatures ||
+            batteryCapacity ||
             product.hasBuiltInBattery !== undefined ||
             product.isGamingHeadset !== undefined ||
             product.headphoneAccessoryType ||
             product.headphoneConnectionType ||
-            product.plugType) && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Thông số tai nghe</Text>
-            {product.headphoneType && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loại tai nghe:</Text>
-                <Text style={styles.detailValue}>{product.headphoneType}</Text>
+            product.plugType
+          ) {
+            return (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Thông số tai nghe</Text>
+                {headphoneType && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Loại tai nghe:</Text>
+                    <Text style={styles.detailValue}>{headphoneType}</Text>
+                  </View>
+                )}
+                {compatibleDevices && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Thiết bị tương thích:</Text>
+                    <Text style={styles.detailValue}>{compatibleDevices}</Text>
+                  </View>
+                )}
+                {product.isSportsModel !== undefined && product.isSportsModel !== null && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Mẫu thể thao:</Text>
+                    <Text style={styles.detailValue}>{product.isSportsModel ? 'Có' : 'Không'}</Text>
+                  </View>
+                )}
+                {headphoneFeatures && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Tính năng:</Text>
+                    <Text style={styles.detailValue}>{headphoneFeatures}</Text>
+                  </View>
+                )}
+                {batteryCapacity && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Dung lượng pin:</Text>
+                    <Text style={styles.detailValue}>{batteryCapacity}</Text>
+                  </View>
+                )}
+                {product.hasBuiltInBattery !== undefined && product.hasBuiltInBattery !== null && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Pin tích hợp:</Text>
+                    <Text style={styles.detailValue}>{product.hasBuiltInBattery ? 'Có' : 'Không'}</Text>
+                  </View>
+                )}
+                {product.isGamingHeadset !== undefined && product.isGamingHeadset !== null && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Tai nghe gaming:</Text>
+                    <Text style={styles.detailValue}>{product.isGamingHeadset ? 'Có' : 'Không'}</Text>
+                  </View>
+                )}
+                {product.headphoneAccessoryType && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Loại phụ kiện:</Text>
+                    <Text style={styles.detailValue}>{product.headphoneAccessoryType}</Text>
+                  </View>
+                )}
+                {product.headphoneConnectionType && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Loại kết nối:</Text>
+                    <Text style={styles.detailValue}>{product.headphoneConnectionType}</Text>
+                  </View>
+                )}
+                {product.plugType && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Loại jack cắm:</Text>
+                    <Text style={styles.detailValue}>{product.plugType}</Text>
+                  </View>
+                )}
               </View>
-            )}
-            {product.compatibleDevices && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Thiết bị tương thích:</Text>
-                <Text style={styles.detailValue}>{product.compatibleDevices}</Text>
-              </View>
-            )}
-            {product.isSportsModel !== undefined && product.isSportsModel !== null && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Mẫu thể thao:</Text>
-                <Text style={styles.detailValue}>{product.isSportsModel ? 'Có' : 'Không'}</Text>
-              </View>
-            )}
-            {product.headphoneFeatures && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Tính năng:</Text>
-                <Text style={styles.detailValue}>{product.headphoneFeatures}</Text>
-              </View>
-            )}
-            {product.batteryCapacity && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Dung lượng pin:</Text>
-                <Text style={styles.detailValue}>{product.batteryCapacity}</Text>
-              </View>
-            )}
-            {product.hasBuiltInBattery !== undefined && product.hasBuiltInBattery !== null && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Pin tích hợp:</Text>
-                <Text style={styles.detailValue}>{product.hasBuiltInBattery ? 'Có' : 'Không'}</Text>
-              </View>
-            )}
-            {product.isGamingHeadset !== undefined && product.isGamingHeadset !== null && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Tai nghe gaming:</Text>
-                <Text style={styles.detailValue}>{product.isGamingHeadset ? 'Có' : 'Không'}</Text>
-              </View>
-            )}
-            {product.headphoneAccessoryType && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loại phụ kiện:</Text>
-                <Text style={styles.detailValue}>{product.headphoneAccessoryType}</Text>
-              </View>
-            )}
-            {product.headphoneConnectionType && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loại kết nối:</Text>
-                <Text style={styles.detailValue}>{product.headphoneConnectionType}</Text>
-              </View>
-            )}
-            {product.plugType && (
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Loại jack cắm:</Text>
-                <Text style={styles.detailValue}>{product.plugType}</Text>
-              </View>
-            )}
-          </View>
-        )}
+            );
+          }
+          return null;
+        })()}
 
         {/* Microphone Specifications - Only for Micro category */}
         {product.categoryName === 'Micro' &&
@@ -1207,6 +1373,21 @@ const ProductDetailScreen: React.FC = () => {
         )}
 
 
+        {/* Dynamic Attributes - Display ALL attributes from API */}
+        {product.attributeValues && product.attributeValues.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Thông số kỹ thuật chi tiết</Text>
+            {product.attributeValues.map((attr, index) => (
+              <View key={`${attr.attributeId}-${index}`} style={styles.detailRow}>
+                <Text style={styles.detailLabel}>{attr.attributeLabel || attr.attributeName}:</Text>
+                <Text style={styles.detailValue}>
+                  {typeof attr.value === 'boolean' ? (attr.value ? 'Có' : 'Không') : String(attr.value)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* Bulk Discounts */}
         {product.bulkDiscounts && product.bulkDiscounts.length > 0 && (
           <View style={styles.section}>
@@ -1223,16 +1404,142 @@ const ProductDetailScreen: React.FC = () => {
             ))}
           </View>
         )}
+
+        {/* Reviews Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            Đánh giá ({product.reviewCount || reviews.length})
+          </Text>
+          {isLoadingReviews && reviews.length === 0 ? (
+            <View style={styles.reviewsLoadingContainer}>
+              <ActivityIndicator size="small" color={ORANGE} />
+              <Text style={styles.reviewsLoadingText}>Đang tải đánh giá...</Text>
+            </View>
+          ) : reviews.length === 0 ? (
+            <View style={styles.reviewsEmptyContainer}>
+              <MaterialCommunityIcons name="comment-outline" size={48} color="#CCCCCC" />
+              <Text style={styles.reviewsEmptyText}>Chưa có đánh giá nào</Text>
+            </View>
+          ) : (
+            <>
+              {reviews.map((review) => (
+                <View key={review.id} style={styles.reviewItem}>
+                  <View style={styles.reviewHeader}>
+                    <View style={styles.reviewCustomerInfo}>
+                      {review.customerAvatarUrl ? (
+                        <Image
+                          source={{ uri: review.customerAvatarUrl }}
+                          style={styles.reviewAvatar}
+                        />
+                      ) : (
+                        <View style={styles.reviewAvatarPlaceholder}>
+                          <MaterialCommunityIcons name="account" size={20} color="#999" />
+                        </View>
+                      )}
+                      <View style={styles.reviewCustomerDetails}>
+                        <Text style={styles.reviewCustomerName}>
+                          {formatCustomerName(review.customerName)}
+                        </Text>
+                        <View style={styles.reviewRatingRow}>
+                          <View style={styles.reviewStars}>
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <MaterialCommunityIcons
+                                key={star}
+                                name={star <= review.rating ? 'star' : 'star-outline'}
+                                size={14}
+                                color={star <= review.rating ? '#FFA800' : '#DDD'}
+                              />
+                            ))}
+                          </View>
+                          <Text style={styles.reviewDate}>
+                            {new Date(review.createdAt).toLocaleDateString('vi-VN', {
+                              year: 'numeric',
+                              month: '2-digit',
+                              day: '2-digit',
+                            })}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                    {review.variantOptionName && review.variantOptionValue && (
+                      <Chip compact style={styles.reviewVariantChip}>
+                        {review.variantOptionName}: {review.variantOptionValue}
+                      </Chip>
+                    )}
+                  </View>
+
+                  {review.content && (
+                    <Text style={styles.reviewContent}>{review.content}</Text>
+                  )}
+
+                  {review.media && review.media.length > 0 && (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={styles.reviewMediaContainer}
+                      contentContainerStyle={styles.reviewMediaContent}
+                    >
+                      {review.media.map((media, index) => (
+                        <View key={index} style={styles.reviewMediaItem}>
+                          {media.type === 'IMAGE' ? (
+                            <Image source={{ uri: media.url }} style={styles.reviewMediaImage} />
+                          ) : (
+                            <View style={styles.reviewMediaVideo}>
+                              <MaterialCommunityIcons name="play-circle" size={32} color="#FFF" />
+                            </View>
+                          )}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+
+                  {review.replies && review.replies.length > 0 && (
+                    <View style={styles.reviewRepliesContainer}>
+                      {review.replies.map((reply, index) => (
+                        <View key={index} style={styles.reviewReply}>
+                          <View style={styles.reviewReplyHeader}>
+                            <MaterialCommunityIcons name="store" size={16} color={ORANGE} />
+                            <Text style={styles.reviewReplyStoreName}>{reply.storeName}</Text>
+                            <Text style={styles.reviewReplyDate}>
+                              {new Date(reply.createdAt).toLocaleDateString('vi-VN', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                              })}
+                            </Text>
+                          </View>
+                          <Text style={styles.reviewReplyContent}>{reply.content}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              ))}
+
+              {hasMoreReviews && (
+                <TouchableOpacity
+                  style={styles.loadMoreReviewsButton}
+                  onPress={() => {
+                    if (!isLoadingReviews) {
+                      loadReviews(reviewsPage + 1, true);
+                    }
+                  }}
+                  disabled={isLoadingReviews}
+                >
+                  {isLoadingReviews ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <Text style={styles.loadMoreReviewsText}>Xem thêm đánh giá</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </>
+          )}
+        </View>
       </ScrollView>
 
       {/* Bottom Action Bar */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.actionButton}>
-          <MaterialCommunityIcons name="heart-outline" size={24} color={ORANGE} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton}>
-          <MaterialCommunityIcons name="share-variant-outline" size={24} color={ORANGE} />
-        </TouchableOpacity>
         <TouchableOpacity
           style={[
             styles.addToCartButton,
@@ -1810,6 +2117,156 @@ const styles = StyleSheet.create({
   modalCloseText: {
     color: '#666',
     fontSize: 14,
+  },
+  reviewsLoadingContainer: {
+    paddingVertical: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewsLoadingText: {
+    marginTop: 8,
+    color: '#666',
+    fontSize: 14,
+  },
+  reviewsEmptyContainer: {
+    paddingVertical: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewsEmptyText: {
+    marginTop: 12,
+    color: '#999',
+    fontSize: 14,
+  },
+  reviewItem: {
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  reviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  reviewCustomerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  reviewAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  reviewAvatarPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F0F0F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  reviewCustomerDetails: {
+    flex: 1,
+  },
+  reviewCustomerName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#222',
+    marginBottom: 4,
+  },
+  reviewRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  reviewStars: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  reviewDate: {
+    fontSize: 12,
+    color: '#999',
+  },
+  reviewVariantChip: {
+    backgroundColor: '#F5F5F5',
+    height: 24,
+  },
+  reviewContent: {
+    fontSize: 14,
+    color: '#444',
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  reviewMediaContainer: {
+    marginBottom: 12,
+  },
+  reviewMediaContent: {
+    gap: 8,
+  },
+  reviewMediaItem: {
+    marginRight: 8,
+  },
+  reviewMediaImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+  },
+  reviewMediaVideo: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewRepliesContainer: {
+    marginTop: 12,
+    paddingLeft: 16,
+    borderLeftWidth: 3,
+    borderLeftColor: ORANGE,
+  },
+  reviewReply: {
+    marginBottom: 8,
+  },
+  reviewReplyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  reviewReplyStoreName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: ORANGE,
+  },
+  reviewReplyDate: {
+    fontSize: 11,
+    color: '#999',
+    marginLeft: 'auto',
+  },
+  reviewReplyContent: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 18,
+  },
+  loadMoreReviewsButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#FFF3EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadMoreReviewsText: {
+    color: ORANGE,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

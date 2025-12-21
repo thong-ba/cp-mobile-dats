@@ -1,8 +1,10 @@
 import { useNavigation } from '@react-navigation/native';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar, Button, Card, Chip, Divider, List, Snackbar, Text, useTheme } from 'react-native-paper';
 import { useAuth } from '../../../context/AuthContext';
+import { getCustomerOrders } from '../../../services/orderService';
+import { CustomerOrder } from '../../../types/order';
 
 const ProfileScreen = () => {
   const { authState, logout, isAuthenticated } = useAuth();
@@ -11,6 +13,8 @@ const ProfileScreen = () => {
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [logoutSnackbarVisible, setLogoutSnackbarVisible] = useState(false);
   const logoutTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [orders, setOrders] = useState<CustomerOrder[]>([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(false);
 
   const menuItems = [
     { icon: 'account-outline', label: 'Thông tin cá nhân', key: 'profile' },
@@ -23,6 +27,103 @@ const ProfileScreen = () => {
   ];
 
   const profile = authState.customerProfile;
+
+  // Fetch orders để tính toán stats
+  // Fetch tất cả orders (nhiều pages) để tính stats chính xác
+  const loadOrders = useCallback(async () => {
+    const customerId = authState.decodedToken?.customerId;
+    const accessToken = authState.accessToken;
+    
+    if (!customerId || !accessToken || !isAuthenticated) {
+      return;
+    }
+
+    try {
+      setIsLoadingOrders(true);
+      // Fetch page đầu tiên để biết tổng số pages
+      const firstPageResult = await getCustomerOrders({
+        customerId,
+        accessToken,
+        params: {
+          page: 0,
+          size: 100, // Fetch 100 orders mỗi page để giảm số lần gọi API
+        },
+      });
+
+      let allOrders: CustomerOrder[] = [...firstPageResult.data];
+      
+      // Nếu có nhiều pages, fetch các pages còn lại
+      if (firstPageResult.totalPages > 1) {
+        const remainingPages = Array.from(
+          { length: firstPageResult.totalPages - 1 },
+          (_, i) => i + 1,
+        );
+        
+        const remainingPromises = remainingPages.map((page) =>
+          getCustomerOrders({
+            customerId,
+            accessToken,
+            params: {
+              page,
+              size: 100,
+            },
+          }),
+        );
+
+        const remainingResults = await Promise.all(remainingPromises);
+        remainingResults.forEach((result) => {
+          allOrders = [...allOrders, ...result.data];
+        });
+      }
+
+      setOrders(allOrders);
+    } catch (error) {
+      console.error('[ProfileScreen] Failed to load orders', error);
+      setOrders([]);
+    } finally {
+      setIsLoadingOrders(false);
+    }
+  }, [authState.decodedToken?.customerId, authState.accessToken, isAuthenticated]);
+
+  // Load orders khi authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadOrders();
+    } else {
+      setOrders([]);
+    }
+  }, [isAuthenticated, loadOrders]);
+
+  // Tính toán stats từ orders
+  const orderStats = useMemo(() => {
+    if (orders.length === 0) {
+      return {
+        total: 0,
+        cancelled: 0,
+        returned: 0,
+        unpaid: 0,
+      };
+    }
+
+    const total = orders.length;
+    const cancelled = orders.filter(
+      (order) => order.status === 'CANCELLED',
+    ).length;
+    const returned = orders.filter(
+      (order) =>
+        order.status === 'RETURN_REQUESTED' ||
+        order.status === 'RETURNED' ||
+        order.status === 'RETURNING',
+    ).length;
+    const unpaid = orders.filter((order) => order.status === 'UNPAID').length;
+
+    return {
+      total,
+      cancelled,
+      returned,
+      unpaid,
+    };
+  }, [orders]);
 
   const profileDetails = useMemo(() => {
     if (!profile) {
@@ -52,16 +153,23 @@ const ProfileScreen = () => {
   type QuickStat = { label: string; value: number; icon: string };
 
   const quickStats: QuickStat[] = useMemo(() => {
-    if (!profile) {
-      return [];
-    }
+    // Ưu tiên sử dụng stats từ orders API, fallback về profile nếu chưa load xong
+    const stats = isLoadingOrders && orders.length === 0
+      ? {
+          total: profile?.orderCount || 0,
+          cancelled: profile?.cancelCount || 0,
+          returned: profile?.returnCount || 0,
+          unpaid: profile?.unpaidOrderCount || 0,
+        }
+      : orderStats;
+
     return [
-      { label: 'Tổng đơn', value: profile.orderCount || 0, icon: 'shopping-outline' },
-      { label: 'Đơn hủy', value: profile.cancelCount || 0, icon: 'cancel' },
-      { label: 'Đơn trả', value: profile.returnCount || 0, icon: 'package-variant-return' },
-      { label: 'Chưa thanh toán', value: profile.unpaidOrderCount || 0, icon: 'credit-card-off-outline' },
+      { label: 'Tổng đơn', value: stats.total, icon: 'shopping-outline' },
+      { label: 'Đơn hủy', value: stats.cancelled, icon: 'cancel' },
+      { label: 'Đơn trả', value: stats.returned, icon: 'package-variant-return' },
+      { label: 'Chưa thanh toán', value: stats.unpaid, icon: 'credit-card-off-outline' },
     ];
-  }, [profile]);
+  }, [orderStats, profile, isLoadingOrders, orders.length]);
 
   useEffect(
     () => () => {

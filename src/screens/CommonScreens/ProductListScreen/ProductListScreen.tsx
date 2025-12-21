@@ -1,36 +1,23 @@
-import { useNavigation } from '@react-navigation/native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    FlatList,
+    Image,
+    RefreshControl,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import httpClient from '../../../api/httpClient';
-import {
-  BannerCarousel,
-  CategorySection,
-  FlashSaleSection,
-  HomeHeader,
-  PopularSection,
-  ProductGrid,
-  RatingSection,
-} from '../../../components/CommonScreenComponents/HomeScreenComponents';
 import { ProductStatus } from '../../../types/product';
 
 const FALLBACK_IMAGE = 'https://placehold.co/600x400?text=Audio+Product';
-const FALLBACK_CATEGORY_IMAGE = 'https://placehold.co/80?text=CAT';
 const PAGE_SIZE = 20;
 const DEFAULT_STATUS: ProductStatus = 'ACTIVE';
-
-type CategoryItem = {
-  id: string;
-  name: string;
-  image: string;
-};
+const ORANGE = '#FF6A00';
 
 type ProductViewVariant = {
   variantId: string;
@@ -51,7 +38,6 @@ type ProductViewItem = {
   discountPrice?: number | null;
   finalPrice?: number | null;
   priceAfterPromotion?: number | null;
-  category?: string;
   ratingAverage?: number | null;
   reviewCount?: number | null;
   thumbnailUrl?: string | null;
@@ -59,21 +45,26 @@ type ProductViewItem = {
   variants?: ProductViewVariant[];
   vouchers?: {
     platformVouchers?: {
+      campaignId?: string;
+      code?: string;
+      name?: string;
+      description?: string;
       campaignType?: 'FLASH_SALE' | 'MEGA_SALE' | string;
       status?: string;
-      badgeLabel?: string;
-      badgeColor?: string;
-      badgeIconUrl?: string;
       startTime?: string;
       endTime?: string;
       slotOpenTime?: string;
       slotCloseTime?: string;
       slotStatus?: string;
       vouchers?: {
+        platformVoucherId?: string;
+        campaignId?: string;
         type?: 'PERCENT' | 'FIXED';
         discountPercent?: number | null;
         discountValue?: number | null;
         maxDiscountValue?: number | null;
+        minOrderValue?: number | null;
+        usagePerUser?: number;
         startTime?: string;
         endTime?: string;
         status?: string;
@@ -82,6 +73,19 @@ type ProductViewItem = {
         slotStatus?: string;
       }[];
     }[];
+    shopVoucher?: {
+      source?: string;
+      shopVoucherId?: string;
+      shopVoucherProductId?: string;
+      code?: string;
+      title?: string;
+      discountValue?: number | null;
+      discountPercent?: number | null;
+      maxDiscountValue?: number | null;
+      minOrderValue?: number | null;
+      startTime?: string;
+      endTime?: string;
+    };
   };
 };
 
@@ -112,13 +116,12 @@ type ProductCard = {
   rating?: number;
 };
 
-const HomeScreen = () => {
+const formatCurrencyVND = (value: number) =>
+  new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(value);
+
+const ProductListScreen = () => {
   const navigation = useNavigation();
-  const [categories, setCategories] = useState<CategoryItem[]>([]);
-  const [searchInput, setSearchInput] = useState('');
-  const [appliedKeyword, setAppliedKeyword] = useState('');
-  const [selectedCategoryName, setSelectedCategoryName] = useState<string | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const route = useRoute();
   const [products, setProducts] = useState<ProductViewItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -128,58 +131,8 @@ const HomeScreen = () => {
   const [totalPages, setTotalPages] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
-  const loadCategories = useCallback(async () => {
-    try {
-      const res = await httpClient.get<{
-        status: number;
-        message: string;
-        data: Array<{
-          categoryId: string;
-          name: string;
-          children: Array<{
-            categoryId: string;
-            name: string;
-            children: any[];
-          }>;
-        }>;
-      }>('/categories/tree');
-
-      // Flatten categories tree: include both parent and children categories
-      const flattenCategories = (categories: typeof res.data.data): CategoryItem[] => {
-        const result: CategoryItem[] = [];
-        categories.forEach((category) => {
-          // Add parent category
-          result.push({
-            id: category.categoryId,
-            name: category.name,
-            image: FALLBACK_CATEGORY_IMAGE,
-          });
-          // Add children categories if any
-          if (category.children && category.children.length > 0) {
-            category.children.forEach((child) => {
-              result.push({
-                id: child.categoryId,
-                name: child.name,
-                image: FALLBACK_CATEGORY_IMAGE,
-              });
-            });
-          }
-        });
-        return result;
-      };
-
-      const mapped = flattenCategories(res.data?.data ?? []);
-      setCategories(mapped);
-    } catch (error: any) {
-      console.error('fetchCategories error', error);
-      // Set empty categories on error to prevent UI issues
-      setCategories([]);
-    }
-  }, []);
-
   const calculatePricing = (product: ProductViewItem) => {
     // Step 1: Xác định giá gốc (Original Price)
-    // Ưu tiên giá từ variants nếu có, lấy giá thấp nhất
     let originalPrice = 0;
     if (product.variants && product.variants.length > 0) {
       const variantPrices = product.variants
@@ -189,7 +142,6 @@ const HomeScreen = () => {
         originalPrice = Math.min(...variantPrices);
       }
     }
-    // Nếu không có variants hoặc variants không hợp lệ, dùng product.price
     if (!originalPrice) {
       originalPrice = product.price ?? 0;
     }
@@ -199,11 +151,6 @@ const HomeScreen = () => {
       product.vouchers?.platformVouchers && product.vouchers.platformVouchers.length > 0;
 
     // Step 3: Xác định có cần tính toán discount không
-    // Chỉ tính toán khi:
-    // - Backend chưa tính sẵn discountPrice hoặc finalPrice
-    // - Hoặc finalPrice bằng originalPrice (chưa có discount)
-    // - Giá gốc > 0
-    // - Sản phẩm có campaign
     const needsCampaignCalculation =
       (product.discountPrice === null || product.discountPrice === undefined) &&
       (product.finalPrice === null ||
@@ -223,55 +170,43 @@ const HomeScreen = () => {
       const voucher = campaign?.vouchers?.[0];
       const now = new Date();
 
-      // Xác định campaign type
       if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
         campaignType = campaign.campaignType;
       }
 
       let isVoucherActive = false;
 
-      // Step 5: Kiểm tra voucher active
       if (voucher) {
-        // Flash Sale: sử dụng slot time
         if (voucher.slotOpenTime && voucher.slotCloseTime) {
           const slotOpen = new Date(voucher.slotOpenTime);
           const slotClose = new Date(voucher.slotCloseTime);
           isVoucherActive =
             now >= slotOpen && now <= slotClose && voucher.slotStatus === 'ACTIVE';
-        }
-        // Mega Sale / Regular Campaign: sử dụng voucher time
-        else if (voucher.startTime && voucher.endTime) {
+        } else if (voucher.startTime && voucher.endTime) {
           const startTime = new Date(voucher.startTime);
           const endTime = new Date(voucher.endTime);
           isVoucherActive = now >= startTime && now <= endTime && voucher.status === 'ACTIVE';
-        }
-        // Fallback: chỉ kiểm tra status
-        else {
+        } else if (campaign?.startTime && campaign?.endTime) {
+          const startTime = new Date(campaign.startTime);
+          const endTime = new Date(campaign.endTime);
+          isVoucherActive = now >= startTime && now <= endTime && voucher.status === 'ACTIVE';
+        } else {
           isVoucherActive = voucher.status === 'ACTIVE';
         }
       }
 
-      // Step 6: Áp dụng discount nếu voucher active
       if (isVoucherActive && voucher) {
         if (voucher.type === 'PERCENT' && voucher.discountPercent) {
-          // Tính số tiền giảm
           const discountAmount = (originalPrice * voucher.discountPercent) / 100;
-
-          // Áp dụng maxDiscountValue nếu có (giới hạn giảm tối đa)
           const finalDiscount =
             voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
               ? Math.min(discountAmount, voucher.maxDiscountValue)
               : discountAmount;
-
-          // Tính giá cuối cùng
           discountedPrice = Math.max(0, originalPrice - finalDiscount);
           discountPercent = voucher.discountPercent;
           hasDiscount = discountedPrice < originalPrice;
         } else if (voucher.type === 'FIXED' && voucher.discountValue) {
-          // Tính giá cuối cùng
           discountedPrice = Math.max(0, originalPrice - voucher.discountValue);
-
-          // Tính phần trăm giảm để hiển thị
           if (originalPrice > 0) {
             discountPercent = Math.round((voucher.discountValue / originalPrice) * 100);
           }
@@ -279,36 +214,29 @@ const HomeScreen = () => {
         }
       }
     } else if (hasCampaign) {
-      // Backend đã tính sẵn, sử dụng giá từ backend
       discountedPrice =
         product.discountPrice ?? product.finalPrice ?? product.priceAfterPromotion ?? originalPrice;
       hasDiscount = discountedPrice < originalPrice && discountedPrice > 0;
 
-      // Tính discountPercent nếu chưa có
       if (hasDiscount && originalPrice > 0) {
         discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
       }
 
-      // Xác định campaign type
       const campaign = product.vouchers?.platformVouchers?.[0];
       if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
         campaignType = campaign.campaignType;
       }
     }
 
-    // Step 7: Fallback và validation
-    // Nếu finalPrice = 0 nhưng originalPrice > 0, dùng originalPrice
     if (discountedPrice === 0 && originalPrice > 0) {
       discountedPrice = originalPrice;
       hasDiscount = false;
     }
 
-    // Tính discountPercent nếu chưa có
     if (discountPercent === 0 && originalPrice > 0 && discountedPrice > 0 && discountedPrice < originalPrice) {
       discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
     }
 
-    // Build price range if variants exist
     let priceRange: { min: number; max: number } | null = null;
     if (product.variants && product.variants.length > 0) {
       const variantPrices = product.variants
@@ -343,38 +271,25 @@ const HomeScreen = () => {
           setIsLoading(true);
         }
         setErrorMessage(null);
-        
-        // Build query params with all supported filters
+
         const params: Record<string, any> = {
-          status: DEFAULT_STATUS, // Filter by ACTIVE products only
+          status: DEFAULT_STATUS,
           page: pageNum,
           size: PAGE_SIZE,
         };
-
-        // Add optional filters
-        if (appliedKeyword && appliedKeyword.trim()) {
-          params.keyword = appliedKeyword.trim();
-        }
-        if (selectedCategoryId) {
-          params.categoryId = selectedCategoryId;
-        }
-        // Sorting: default sort by name ascending
-        params.sortBy = 'name';
-        params.sortDir = 'asc';
 
         const response = await httpClient.get<ProductPageResponse>('/products/view', {
           params,
         });
         const apiProducts = response.data?.data?.data ?? [];
         const pageInfo = response.data?.data?.page;
-        
+
         if (append) {
           setProducts((prev) => [...prev, ...apiProducts]);
         } else {
           setProducts(apiProducts);
         }
-        
-        // Update pagination state
+
         if (pageInfo) {
           setCurrentPage(pageInfo.pageNumber ?? pageNum);
           setTotalPages(pageInfo.totalPages ?? 0);
@@ -396,21 +311,18 @@ const HomeScreen = () => {
         }
       }
     },
-    [appliedKeyword, selectedCategoryId],
+    [],
   );
 
   useEffect(() => {
-    loadCategories();
     loadProducts();
-  }, [loadCategories]);
+  }, [loadProducts]);
 
-  // Reset và load lại products khi filter thay đổi
-  useEffect(() => {
+  const handleRefresh = useCallback(() => {
     setCurrentPage(0);
     setHasMore(true);
-    setProducts([]);
-    loadProducts(false, 0, false);
-  }, [appliedKeyword, selectedCategoryId, loadProducts]);
+    loadProducts(true, 0, false);
+  }, [loadProducts]);
 
   const handleLoadMore = useCallback(() => {
     if (!isLoadingMore && hasMore && !isRefreshing) {
@@ -418,13 +330,6 @@ const HomeScreen = () => {
       loadProducts(false, nextPage, true);
     }
   }, [isLoadingMore, hasMore, isRefreshing, currentPage, loadProducts]);
-
-  const bannerImages = useMemo(() => {
-    const apiImages = products
-      .flatMap((product) => product.images?.[0] ?? product.thumbnailUrl)
-      .filter((image): image is string => Boolean(image));
-    return apiImages.length > 0 ? apiImages : [FALLBACK_IMAGE];
-  }, [products]);
 
   const productCards = useMemo(
     () =>
@@ -454,143 +359,132 @@ const HomeScreen = () => {
     [products],
   );
 
-  const flashSaleProducts = useMemo(() => productCards.slice(0, 8), [productCards]);
-  const popularProducts = useMemo(() => productCards.slice(0, 10), [productCards]);
-  const ratingItems = useMemo(
-    () =>
-      productCards.slice(0, 10).map((item, index) => ({
-        id: `${item.id}-${index}`,
-        name: item.name,
-        image: item.image,
-        rating: item.rating,
-      })),
-    [productCards],
+  const renderProductItem = ({ item }: { item: ProductCard }) => (
+    <TouchableOpacity
+      style={styles.card}
+      activeOpacity={0.9}
+      onPress={() => {
+        // @ts-ignore - navigate to ProductDetail in ProductStack
+        navigation.navigate('ProductDetail', { productId: item.id });
+      }}
+    >
+      <Image source={{ uri: item.image }} style={styles.cardImage} />
+      <View style={styles.cardContent}>
+        <Text numberOfLines={2} style={styles.cardTitle}>
+          {item.name}
+        </Text>
+        <View style={styles.priceRow}>
+          <Text style={[styles.cardPrice, item.hasDiscount && styles.cardPriceDiscount]}>
+            {item.priceRange
+              ? `${formatCurrencyVND(item.priceRange.min)} - ${formatCurrencyVND(item.priceRange.max)}`
+              : formatCurrencyVND(item.price)}
+          </Text>
+          {item.hasDiscount && item.originalPrice ? (
+            <Text style={styles.cardPriceOriginal}>{formatCurrencyVND(item.originalPrice)}</Text>
+          ) : null}
+        </View>
+        {item.hasDiscount && item.discountPercent ? (
+          <View style={styles.discountBadge}>
+            <Text style={styles.discountBadgeText}>-{item.discountPercent}%</Text>
+          </View>
+        ) : null}
+      </View>
+    </TouchableOpacity>
   );
 
-  const handleSubmitSearch = useCallback(() => {
-    setAppliedKeyword(searchInput.trim());
-  }, [searchInput]);
-
-  const handleSelectCategory = useCallback(
-    (categoryName: string | null) => {
-      setSelectedCategoryName(categoryName);
-      if (!categoryName) {
-        setSelectedCategoryId(null);
-        return;
-      }
-      const found = categories.find(
-        (cat) => cat.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+  const renderFooter = () => {
+    if (!hasMore) return null;
+    if (isLoadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color={ORANGE} />
+        </View>
       );
-      setSelectedCategoryId(found?.id ?? null);
-    },
-    [categories],
-  );
-
-  const renderErrorState = () => (
-    <View style={styles.errorContainer}>
-      <Text style={styles.errorText}>{errorMessage}</Text>
-      <TouchableOpacity style={styles.retryButton} onPress={() => loadProducts()}>
-        <Text style={styles.retryText}>Thử lại</Text>
+    }
+    return (
+      <TouchableOpacity style={styles.loadMoreButton} onPress={handleLoadMore} disabled={isLoadingMore}>
+        <Text style={styles.loadMoreText}>Xem thêm sản phẩm</Text>
       </TouchableOpacity>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
-      <HomeHeader
-        keyword={searchInput}
-        onKeywordChange={setSearchInput}
-        onSubmitSearch={handleSubmitSearch}
-        isSearching={isLoading && products.length === 0}
-      />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={() => loadProducts(true)} />
-        }
-      >
-        <CategorySection
-          categories={categories}
-          selectedCategoryName={selectedCategoryName}
-          onSelectCategory={handleSelectCategory}
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Tất cả sản phẩm</Text>
+        <View style={{ width: 30 }} />
+      </View>
+
+      {isLoading && products.length === 0 ? (
+        <View style={styles.loaderContainer}>
+          <ActivityIndicator size="large" color={ORANGE} />
+          <Text style={styles.loaderText}>Đang tải sản phẩm...</Text>
+        </View>
+      ) : errorMessage ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => loadProducts()}>
+            <Text style={styles.retryText}>Thử lại</Text>
+          </TouchableOpacity>
+        </View>
+      ) : productCards.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Text style={styles.emptyTitle}>Chưa có sản phẩm nào</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={productCards}
+          keyExtractor={(item) => item.id}
+          renderItem={renderProductItem}
+          numColumns={2}
+          columnWrapperStyle={styles.row}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
+          onEndReached={handleLoadMore}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={renderFooter}
         />
-        {isLoading && products.length === 0 ? (
-          <View style={styles.loaderContainer}>
-            <ActivityIndicator size="large" color="#FF6A00" />
-            <Text style={styles.loaderText}>Đang tải sản phẩm...</Text>
-          </View>
-        ) : errorMessage ? (
-          renderErrorState()
-        ) : productCards.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyTitle}>Chưa có sản phẩm nào</Text>
-            <Text style={styles.emptySubtitle}>
-              Hãy thử đổi từ khóa tìm kiếm hoặc chọn danh mục khác.
-            </Text>
-          </View>
-        ) : (
-          <>
-            <BannerCarousel banners={bannerImages} />
-            <FlashSaleSection
-              products={flashSaleProducts}
-              onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-            />
-            <PopularSection
-              products={popularProducts}
-              onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-            />
-            <ProductGrid
-              products={productCards}
-              onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-            />
-            <RatingSection items={ratingItems} />
-            
-            {/* Load More Section */}
-            {hasMore && (
-              <View style={styles.loadMoreContainer}>
-                <TouchableOpacity
-                  style={styles.loadMoreButton}
-                  onPress={() => {
-                    // @ts-ignore - navigate to ProductList in ProductStack
-                    navigation.navigate('ProductList');
-                  }}
-                >
-                  <Text style={styles.loadMoreText}>Xem thêm sản phẩm</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </>
-        )}
-      </ScrollView>
+      )}
     </View>
   );
 };
 
-export default HomeScreen;
+export default ProductListScreen;
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F7F7F7',
   },
-  loaderContainer: {
-    paddingVertical: 32,
+  header: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingTop: 50,
+    backgroundColor: ORANGE,
+  },
+  backButton: {
+    padding: 4,
+  },
+  headerTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  loaderContainer: {
+    flex: 1,
     justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
   },
   loaderText: {
-    marginTop: 12,
-    color: '#555',
+    color: '#666',
+    fontSize: 14,
   },
   errorContainer: {
     marginHorizontal: 16,
@@ -612,14 +506,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: '#FF6A00',
+    backgroundColor: ORANGE,
   },
   retryText: {
     color: '#FFFFFF',
     fontWeight: '700',
   },
   emptyContainer: {
-    paddingVertical: 40,
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
   },
@@ -627,24 +522,86 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#222',
-    marginBottom: 8,
   },
-  emptySubtitle: {
-    textAlign: 'center',
-    color: '#555',
+  listContent: {
+    padding: 12,
+    paddingBottom: 24,
   },
-  loadMoreContainer: {
-    paddingVertical: 24,
-    paddingHorizontal: 16,
+  row: {
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    gap: 12,
+  },
+  card: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+    maxWidth: '48%',
+  },
+  cardImage: {
+    width: '100%',
+    height: 130,
+    backgroundColor: '#F0F0F0',
+  },
+  cardContent: {
+    paddingHorizontal: 10,
+    paddingBottom: 12,
+    paddingTop: 10,
+  },
+  cardTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#222',
+    minHeight: 40,
+  },
+  priceRow: {
+    marginTop: 6,
+  },
+  cardPrice: {
+    color: ORANGE,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  cardPriceDiscount: {
+    color: '#D32F2F',
+  },
+  cardPriceOriginal: {
+    marginTop: 2,
+    color: '#888',
+    textDecorationLine: 'line-through',
+    fontSize: 12,
+  },
+  discountBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: '#D32F2F',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  discountBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  footerLoader: {
+    paddingVertical: 16,
     alignItems: 'center',
-    justifyContent: 'center',
   },
   loadMoreButton: {
-    paddingHorizontal: 32,
+    marginHorizontal: 16,
+    marginVertical: 16,
     paddingVertical: 12,
     borderRadius: 8,
-    backgroundColor: '#FF6A00',
-    minWidth: 200,
+    backgroundColor: ORANGE,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -654,3 +611,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+

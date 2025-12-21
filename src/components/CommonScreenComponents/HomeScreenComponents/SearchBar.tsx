@@ -1,14 +1,17 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { COLORS } from '../../../constants/color';
+import { useAuth } from '../../../context/AuthContext';
+import { getCustomerCart } from '../../../services/cartService';
 
 type Props = {
   value?: string;
@@ -24,6 +27,10 @@ const SearchBar: React.FC<Props> = ({
   isLoading = false,
 }) => {
   const navigation = useNavigation();
+  const { authState, isAuthenticated } = useAuth();
+  const [cartItemCount, setCartItemCount] = useState(0);
+  const [isLoadingCart, setIsLoadingCart] = useState(false);
+  
   const suggestions = useMemo(
     () => ['JBL Party 200', 'Sony Sonic', 'LG King', 'Sony WH-1000XM5', 
         'JBL Flip 6', 'Shure MV7', 'Sony SRS-XB', 'Sony SRS-XB1000', 
@@ -38,6 +45,41 @@ const SearchBar: React.FC<Props> = ({
     }, 3000);
     return () => clearInterval(id);
   }, [suggestions.length]);
+
+  const loadCartCount = useCallback(async () => {
+    const customerId = authState.decodedToken?.customerId;
+    const accessToken = authState.accessToken;
+
+    if (!customerId || !accessToken || !isAuthenticated) {
+      setCartItemCount(0);
+      return;
+    }
+
+    try {
+      setIsLoadingCart(true);
+      const cart = await getCustomerCart({ customerId, accessToken });
+      const count = cart?.items?.length ?? 0;
+      setCartItemCount(count);
+    } catch (error) {
+      console.error('[SearchBar] Failed to load cart count:', error);
+      setCartItemCount(0);
+    } finally {
+      setIsLoadingCart(false);
+    }
+  }, [authState.decodedToken?.customerId, authState.accessToken, isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadCartCount();
+      // Poll cart count every 30 seconds
+      const intervalId = setInterval(() => {
+        loadCartCount();
+      }, 30000);
+      return () => clearInterval(intervalId);
+    } else {
+      setCartItemCount(0);
+    }
+  }, [isAuthenticated, loadCartCount]);
 
   return (
     <View style={styles.container}>
@@ -65,10 +107,19 @@ const SearchBar: React.FC<Props> = ({
             navigation.navigate('Cart');
           }}
         >
-          {isLoading ? (
+          {isLoading || isLoadingCart ? (
             <ActivityIndicator size="small" color="#FF6A00" />
           ) : (
-            <MaterialCommunityIcons name="cart-outline" size={22} color={COLORS.white} />
+            <View style={styles.cartIconContainer}>
+              <MaterialCommunityIcons name="cart-outline" size={22} color={COLORS.white} />
+              {cartItemCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {cartItemCount > 99 ? '99+' : cartItemCount}
+                  </Text>
+                </View>
+              )}
+            </View>
           )}
         </TouchableOpacity>
         <TouchableOpacity style={styles.actionIcon} activeOpacity={0.8}>
@@ -118,5 +169,30 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255,106,0,0.35)',
+  },
+  cartIconContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    backgroundColor: '#D32F2F',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });

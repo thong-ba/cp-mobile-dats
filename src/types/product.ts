@@ -122,6 +122,14 @@ export type BulkDiscount = {
   unitPrice: number;
 };
 
+export type ProductAttributeValue = {
+  attributeId: string;
+  attributeName: string;
+  attributeLabel: string;
+  dataType: 'STRING' | 'NUMBER' | 'BOOLEAN' | 'DATE';
+  value: string | number | boolean;
+};
+
 export type ProductDetail = {
   productId: string;
   storeId: string;
@@ -133,11 +141,11 @@ export type ProductDetail = {
   slug: string;
   shortDescription: string;
   description: string;
-  model: string;
-  color: string;
-  material: string;
-  dimensions: string;
-  weight: number;
+  model: string | null;
+  color: string | null;
+  material: string | null;
+  dimensions: string | null;
+  weight: number | null;
   variants: ProductVariant[];
   images: string[];
   videoUrl: string;
@@ -234,6 +242,13 @@ export type ProductDetail = {
   builtInEffects?: boolean;
   usbAudioInterface?: boolean;
   midiSupport?: boolean;
+  // Dynamic attributes from API
+  attributeValues?: ProductAttributeValue[];
+  // Categories array support
+  categories?: Array<{
+    categoryId: string;
+    categoryName: string;
+  }>;
 };
 
 export type ProductDetailResponse = {

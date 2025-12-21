@@ -2,26 +2,26 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { Chip, Snackbar } from 'react-native-paper';
 import OrderDetailModal from '../../../components/CustomerScreenComponents/OrderScreenComponents/OrderDetailModal';
 import OrderItemCard from '../../../components/CustomerScreenComponents/OrderScreenComponents/OrderItemCard';
 import { useAuth } from '../../../context/AuthContext';
 import {
-    cancelOrder,
-    createReturnRequest,
-    getCustomerOrderById,
-    getCustomerOrders,
-    getGhnOrderByStoreOrderId,
-    requestCancelOrder,
+  cancelOrder,
+  createReturnRequest,
+  getCustomerOrderById,
+  getCustomerOrders,
+  getGhnOrderByStoreOrderId,
+  requestCancelOrder,
 } from '../../../services/orderService';
 import { CustomerOrder, GHNOrderResponse, OrderStatus, ReturnReasonType } from '../../../types/order';
 
@@ -45,12 +45,23 @@ const getStatusLabel = (status: OrderStatus): string => {
   const labels: Record<OrderStatus, string> = {
     PENDING: 'Chờ xử lý',
     UNPAID: 'Chưa thanh toán',
+    CONFIRMED: 'Đã xác nhận',
     AWAITING_SHIPMENT: 'Chờ giao hàng',
     SHIPPING: 'Đang vận chuyển',
+    READY_FOR_PICKUP: 'Sẵn sàng lấy hàng',
+    OUT_FOR_DELIVERY: 'Đang giao hàng',
+    DELIVERED_WAITING_CONFIRM: 'Đã giao chờ xác nhận',
     DELIVERY_SUCCESS: 'Giao hàng thành công',
+    DELIVERY_DENIED: 'Từ chối nhận hàng',
+    READY_FOR_DELIVERY: 'Sẵn sàng giao hàng',
+    DELIVERY_FAIL: 'Giao hàng thất bại',
     COMPLETED: 'Hoàn thành',
     CANCELLED: 'Đã hủy',
     RETURN_REQUESTED: 'Yêu cầu hoàn trả',
+    RETURNED: 'Đã hoàn trả',
+    RETURNING: 'Đang hoàn trả',
+    EXCEPTION: 'Ngoại lệ',
+    GHN_CREATED: 'Đã tạo GHN',
   };
   return labels[status] || status;
 };
@@ -59,12 +70,23 @@ const getStatusColor = (status: OrderStatus): string => {
   const colors: Record<OrderStatus, string> = {
     PENDING: '#FF9800',
     UNPAID: '#F44336',
+    CONFIRMED: '#2196F3',
     AWAITING_SHIPMENT: '#2196F3',
     SHIPPING: '#4CAF50',
+    READY_FOR_PICKUP: '#00BCD4',
+    OUT_FOR_DELIVERY: '#4CAF50',
+    DELIVERED_WAITING_CONFIRM: '#FFC107',
     DELIVERY_SUCCESS: '#4CAF50',
+    DELIVERY_DENIED: '#F44336',
+    READY_FOR_DELIVERY: '#00BCD4',
+    DELIVERY_FAIL: '#F44336',
     COMPLETED: '#4CAF50',
     CANCELLED: '#9E9E9E',
     RETURN_REQUESTED: '#FF5722',
+    RETURNED: '#9E9E9E',
+    RETURNING: '#FF9800',
+    EXCEPTION: '#F44336',
+    GHN_CREATED: '#2196F3',
   };
   return colors[status] || '#9E9E9E';
 };
@@ -152,12 +174,16 @@ const OrderScreen: React.FC = () => {
     [authState.decodedToken?.customerId, authState.accessToken, isAuthenticated, selectedStatus, ghnOrderData],
   );
 
+  // Reset pagination khi filter thay đổi
   useEffect(() => {
     if (isAuthenticated) {
       setPage(0);
+      setHasMore(true);
+      setOrders([]);
       loadOrders(0, false);
     }
-  }, [isAuthenticated, selectedStatus, loadOrders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, selectedStatus]);
 
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
@@ -166,12 +192,12 @@ const OrderScreen: React.FC = () => {
   }, [loadOrders]);
 
   const handleLoadMore = useCallback(() => {
-    if (!isLoading && hasMore) {
+    if (!isLoading && hasMore && !isRefreshing) {
       const nextPage = page + 1;
       setPage(nextPage);
       loadOrders(nextPage, true);
     }
-  }, [isLoading, hasMore, page, loadOrders]);
+  }, [isLoading, hasMore, page, isRefreshing, loadOrders]);
 
   const handleOrderPress = useCallback(
     async (order: CustomerOrder) => {
@@ -293,12 +319,20 @@ const OrderScreen: React.FC = () => {
 
   const statusFilters: Array<{ label: string; value: OrderStatus | 'ALL' }> = [
     { label: 'Tất cả', value: 'ALL' },
+    { label: 'Chưa thanh toán', value: 'UNPAID' },
     { label: 'Chờ xử lý', value: 'PENDING' },
+    { label: 'Đã xác nhận', value: 'CONFIRMED' },
     { label: 'Chờ giao hàng', value: 'AWAITING_SHIPMENT' },
     { label: 'Đang vận chuyển', value: 'SHIPPING' },
+    { label: 'Sẵn sàng lấy hàng', value: 'READY_FOR_PICKUP' },
+    { label: 'Đang giao hàng', value: 'OUT_FOR_DELIVERY' },
+    { label: 'Đã giao chờ xác nhận', value: 'DELIVERED_WAITING_CONFIRM' },
     { label: 'Giao thành công', value: 'DELIVERY_SUCCESS' },
     { label: 'Hoàn thành', value: 'COMPLETED' },
     { label: 'Đã hủy', value: 'CANCELLED' },
+    { label: 'Yêu cầu hoàn trả', value: 'RETURN_REQUESTED' },
+    { label: 'Đang hoàn trả', value: 'RETURNING' },
+    { label: 'Đã hoàn trả', value: 'RETURNED' },
   ];
 
   if (!isAuthenticated) {
