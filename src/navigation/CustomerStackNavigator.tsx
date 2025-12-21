@@ -11,13 +11,25 @@ import ProfileScreen from '../screens/CustomerScreens/ProfileScreen/ProfileScree
 import { Cart } from '../types/cart';
 import { CustomerAddress } from '../types/customer';
 
+type SelectedVoucher = {
+  shopVoucherId: string;
+  code: string;
+};
+
 export type CustomerStackParamList = {
   ProfileMain: undefined;
   AddressList: undefined;
   CreateAddress: undefined;
   EditAddress: { address: CustomerAddress };
   Cart: undefined;
-  Checkout: { cart?: Cart } | undefined;
+  Checkout:
+    | {
+        cart?: Cart;
+        selectedCartItemIds?: string[];
+        storeVouchers?: Record<string, SelectedVoucher>;
+        productVouchers?: Record<string, SelectedVoucher>;
+      }
+    | undefined;
   Orders: undefined;
   Notifications: undefined;
 };

@@ -1,5 +1,6 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React from 'react';
-import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../../../constants/color';
 
 type Props = {
@@ -7,10 +8,40 @@ type Props = {
   categories: {
     id: number | string;
     name: string;
-    image: string;
+    image?: string;
+    icon?: string;
   }[];
   selectedCategoryName?: string | null;
   onSelectCategory?: (categoryName: string | null) => void;
+};
+
+/**
+ * Map category name to MaterialCommunityIcons icon name
+ */
+const getCategoryIcon = (categoryName: string): string => {
+  const name = categoryName.toLowerCase();
+  
+  if (name.includes('loa') || name.includes('speaker')) {
+    return 'speaker';
+  }
+  if (name.includes('tai nghe') || name.includes('headphone')) {
+    return 'headphones';
+  }
+  if (name.includes('micro') || name.includes('mic')) {
+    return 'microphone';
+  }
+  if (name.includes('dac') || name.includes('mixer') || name.includes('soundcard')) {
+    return 'soundcloud';
+  }
+  if (name.includes('turntable') || name.includes('máy quay')) {
+    return 'record-player';
+  }
+  if (name.includes('ampli') || name.includes('amp')) {
+    return 'amplifier';
+  }
+  
+  // Default icon
+  return 'dots-grid';
 };
 
 const CategorySection: React.FC<Props> = ({
@@ -31,6 +62,7 @@ const CategorySection: React.FC<Props> = ({
           const isSelected =
             selectedCategoryName &&
             cat.name.toLocaleLowerCase() === selectedCategoryName.toLocaleLowerCase();
+          const iconName = cat.icon || getCategoryIcon(cat.name);
           return (
             <TouchableOpacity
               key={cat.id}
@@ -40,7 +72,13 @@ const CategorySection: React.FC<Props> = ({
                 onSelectCategory?.(isSelected ? null : cat.name)
               }
             >
-              <Image source={{ uri: cat.image }} style={styles.categoryImage} />
+              <View style={styles.iconContainer}>
+                <MaterialCommunityIcons
+                  name={iconName as any}
+                  size={24}
+                  color={isSelected ? COLORS.primary : '#666'}
+                />
+              </View>
               <Text
                 style={[
                   styles.categoryText,
@@ -83,10 +121,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
   },
-  categoryImage: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  iconContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 8,
   },
   categoryText: {

@@ -13,7 +13,13 @@ import {
 import { Button, RadioButton, Snackbar } from 'react-native-paper';
 import { useAuth } from '../../../context/AuthContext';
 import { CustomerStackParamList } from '../../../navigation/CustomerStackNavigator';
-import { checkoutCod, checkoutPayOS, deleteCartItems, getCustomerCart } from '../../../services/cartService';
+import {
+  checkoutCod,
+  checkoutPayOS,
+  checkoutPreview,
+  deleteCartItems,
+  getCustomerCart,
+} from '../../../services/cartService';
 import { getCustomerAddresses } from '../../../services/customerService';
 import { getProductById, getProductVouchers } from '../../../services/productService';
 import {
@@ -25,7 +31,12 @@ import {
 } from '../../../services/shippingService';
 import { getShopVouchersByStore } from '../../../services/voucherService';
 import { Cart } from '../../../types/cart';
-import { CheckoutItemPayload, PaymentMethod } from '../../../types/checkout';
+import {
+  CheckoutItemPayload,
+  CheckoutPreviewRequest,
+  CheckoutPreviewResponse,
+  PaymentMethod,
+} from '../../../types/checkout';
 import { CustomerAddress } from '../../../types/customer';
 import { PlatformCampaign, PlatformVoucherItem } from '../../../types/product';
 import {
@@ -75,8 +86,15 @@ const CheckoutScreen: React.FC = () => {
 
   // Track if data has been loaded to prevent repeated loading
   const hasLoadedRef = useRef(false);
+  // Track if vouchers have been loaded to prevent repeated loading
+  const vouchersLoadedRef = useRef<string | null>(null); // Track cartId to know if vouchers were loaded for this cart
   // Track last log time for throttling (30s)
   const lastLogTimeRef = useRef<Record<string, number>>({});
+  // Track last API call time to prevent frequent requests
+  const lastPreviewCallRef = useRef<number>(0);
+  const lastShippingCallRef = useRef<number>(0);
+  const PREVIEW_THROTTLE_MS = 3000; // 3 seconds between preview calls
+  const SHIPPING_THROTTLE_MS = 2000; // 2 seconds between shipping calls
 
   // Voucher states
   const [availableVouchers, setAvailableVouchers] = useState<ShopVoucher[]>([]);
@@ -99,20 +117,53 @@ const CheckoutScreen: React.FC = () => {
   const [shippingFeeError, setShippingFeeError] = useState<string | null>(null);
   const [isCalculatingShipping, setIsCalculatingShipping] = useState(false);
 
-  // Map cart items to UI items with pricing
+  // Checkout preview data
+  const [previewData, setPreviewData] = useState<CheckoutPreviewResponse['data'] | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  // Map cart items to UI items with pricing - filter by selectedCartItemIds if provided
+  // Ưu tiên sử dụng preview data nếu có để hiển thị giá chính xác
   const cartItems = useMemo(() => {
     if (!cart) return [];
-    return cart.items.map((item) => {
-      const originalPrice = item.baseUnitPrice ?? item.unitPrice;
-      const hasPlatformPrice =
-        item.platformCampaignPrice !== null && item.platformCampaignPrice !== undefined;
-      const finalPrice =
-        item.inPlatformCampaign &&
-        !item.campaignUsageExceeded &&
-        hasPlatformPrice &&
-        item.platformCampaignPrice
-          ? item.platformCampaignPrice
-          : item.unitPrice;
+    
+    // Filter items by selectedCartItemIds if provided from navigation params
+    const selectedCartItemIds = route.params?.selectedCartItemIds;
+    const itemsToUse = selectedCartItemIds
+      ? cart.items.filter((item) => selectedCartItemIds.includes(item.cartItemId))
+      : cart.items;
+    
+    return itemsToUse.map((item) => {
+      // Nếu có preview data, tìm item tương ứng trong preview để lấy giá chính xác
+      let originalPrice = item.baseUnitPrice ?? item.unitPrice;
+      let finalPrice = item.unitPrice;
+      
+      if (previewData) {
+        // Tìm item trong preview data theo cartItemId hoặc variantId
+        for (const store of previewData.stores) {
+          const previewItem = store.items.find(
+            (pi) => pi.cartItemId === item.cartItemId || pi.variantId === item.variantId,
+          );
+          if (previewItem) {
+            // Sử dụng giá từ preview data
+            originalPrice = previewItem.unitPriceBeforeDiscount ?? originalPrice;
+            finalPrice = previewItem.finalUnitPrice ?? previewItem.finalLineTotal ?? finalPrice;
+            break;
+          }
+        }
+      } else {
+        // Fallback: tính toán từ cart item
+        const hasPlatformPrice =
+          item.platformCampaignPrice !== null && item.platformCampaignPrice !== undefined;
+        finalPrice =
+          item.inPlatformCampaign &&
+          !item.campaignUsageExceeded &&
+          hasPlatformPrice &&
+          item.platformCampaignPrice
+            ? item.platformCampaignPrice
+            : item.unitPrice;
+      }
+      
       return {
         ...item,
         finalPrice,
@@ -120,7 +171,7 @@ const CheckoutScreen: React.FC = () => {
         isSelected: true, // All items in checkout are selected
       };
     });
-  }, [cart]);
+  }, [cart, previewData, route.params?.selectedCartItemIds]);
 
   // Load cart and addresses
   const loadData = useCallback(async () => {
@@ -176,8 +227,20 @@ const CheckoutScreen: React.FC = () => {
       throttledLog('loadVouchers_skipped', () => {
         log.log('[CheckoutScreen] loadVouchers: Skipped - No cart or empty items');
       });
+      vouchersLoadedRef.current = null; // Reset when cart is empty
       return;
     }
+    
+    // Check if vouchers have already been loaded for this cart
+    if (vouchersLoadedRef.current === cart.cartId) {
+      throttledLog('loadVouchers_already_loaded', () => {
+        log.log('[CheckoutScreen] loadVouchers: Already loaded for this cart', {
+          cartId: cart.cartId,
+        });
+      });
+      return;
+    }
+    
     const loadVouchers = async () => {
       const customerId = authState.decodedToken?.customerId;
       const accessToken = authState.accessToken;
@@ -291,14 +354,15 @@ const CheckoutScreen: React.FC = () => {
               },
             }));
 
-            return shopVouchersWithStore;
+            return { shopVouchers: shopVouchersWithStore, storeId: productData?.storeId || null };
           } catch (error) {
             // log.error(`[CheckoutScreen] Failed to load vouchers for product ${productId}`, error);
-            return [];
+            return { shopVouchers: [], storeId: null };
           }
         });
 
-        const allShopVouchers = await Promise.all(voucherPromises);
+        const allResults = await Promise.all(voucherPromises);
+        const allShopVouchers = allResults.map((r) => r.shopVouchers);
         const flatShopVouchers = allShopVouchers.flat();
         // Dedup by code
         const uniqueVouchers = Array.from(
@@ -313,14 +377,12 @@ const CheckoutScreen: React.FC = () => {
         setAvailableVouchers(uniqueVouchers);
 
         // Load store-wide vouchers
+        // Get storeIds from the fetched product data (not from productCache to avoid dependency issues)
         const storeIds = Array.from(
           new Set(
-            cart.items
-              .map((item) => {
-                const cache = productCache[item.refId];
-                return cache?.storeId;
-              })
-              .filter(Boolean),
+            allResults
+              .map((r: { shopVouchers: any[]; storeId: string | null }) => r.storeId)
+              .filter((storeId: string | null): storeId is string => !!storeId),
           ),
         ) as string[];
 
@@ -360,13 +422,16 @@ const CheckoutScreen: React.FC = () => {
           });
         });
         setStoreWideVouchers(storeWideMap);
+        
+        // Mark vouchers as loaded for this cart
+        vouchersLoadedRef.current = cart.cartId;
       } catch (error) {
         // log.error('[CheckoutScreen] loadVouchers: Failed', error);
       }
     };
 
     loadVouchers();
-  }, [cart, authState.decodedToken?.customerId, authState.accessToken, productCache]);
+  }, [cart, authState.decodedToken?.customerId, authState.accessToken]); // Removed productCache from dependencies to prevent infinite loop
 
   // Fetch missing product details for shipping calculation
   const fetchMissingProductDetails = useCallback(
@@ -464,12 +529,20 @@ const CheckoutScreen: React.FC = () => {
       return;
     }
 
-    // Step 2: Debounce 500ms để tránh spam API
+    // Step 2: Debounce và throttle để tránh spam API
     const timeoutId = setTimeout(async () => {
       const customerId = authState.decodedToken?.customerId;
       const accessToken = authState.accessToken;
       if (!customerId || !accessToken) {
         // log.log('[CheckoutScreen] calculateShippingFee: Skipped - No customerId or accessToken');
+        return;
+      }
+
+      // Throttle: chỉ gọi nếu đã qua 2 giây kể từ lần gọi trước
+      const now = Date.now();
+      const timeSinceLastCall = now - lastShippingCallRef.current;
+      if (timeSinceLastCall < SHIPPING_THROTTLE_MS) {
+        // Chưa đủ thời gian, bỏ qua
         return;
       }
 
@@ -480,6 +553,9 @@ const CheckoutScreen: React.FC = () => {
         });
         return;
       }
+
+      // Update last call time
+      lastShippingCallRef.current = Date.now();
 
       throttledLog('calculateShippingFee_start', () => {
         log.log('[CheckoutScreen] calculateShippingFee: Starting...', {
@@ -733,43 +809,108 @@ const CheckoutScreen: React.FC = () => {
           log.log('[CheckoutScreen] calculateShippingFee: Completed');
         });
       }
-    }, 500); // Debounce 500ms
+    }, 1500); // Debounce 1.5 seconds
 
     return () => clearTimeout(timeoutId);
   }, [
     selectedAddressId,
-    cartItems,
-    addresses,
-    productCache,
+    cartItems.length, // Chỉ track length thay vì toàn bộ array
+    addresses.length, // Chỉ track length thay vì toàn bộ array
+    // Removed productCache and fetchMissingProductDetails from dependencies
     authState.decodedToken?.customerId,
     authState.accessToken,
-    fetchMissingProductDetails,
   ]);
 
-  // Prefill cart from navigation params
+  // Prefill cart and vouchers from navigation params
   useEffect(() => {
-    if (route.params?.cart) {
-      // log.log('[CheckoutScreen] Prefill cart from params', {
-      //   cartId: route.params.cart.cartId,
-      //   itemsCount: route.params.cart.items.length,
-      //   subtotal: route.params.cart.subtotal,
+    const params = route.params;
+    if (params?.cart) {
+      // Debug: Chỉ log khi cần thiết, không log thường xuyên
+      // console.log('[CheckoutScreen] Prefill from params', {
+      //   cartId: params.cart.cartId,
+      //   itemsCount: params.cart.items.length,
+      //   selectedCartItemIdsCount: params.selectedCartItemIds?.length,
+      //   storeVouchersCount: params.storeVouchers ? Object.keys(params.storeVouchers).length : 0,
+      //   productVouchersCount: params.productVouchers ? Object.keys(params.productVouchers).length : 0,
       // });
-      setCart(route.params.cart);
+      
+      setCart(params.cart);
+      
+      // Restore store vouchers from params
+      if (params.storeVouchers) {
+        const restoredStoreWideVouchers: Record<string, AppliedStoreWideVoucher> = {};
+        
+        Object.entries(params.storeVouchers).forEach(([storeId, voucher]) => {
+          restoredStoreWideVouchers[storeId] = {
+            voucherId: voucher.shopVoucherId,
+            code: voucher.code,
+            storeId: storeId,
+            discountValue: 0, // Will be recalculated
+            type: 'PERCENT', // Default, will be updated when vouchers are loaded
+          };
+        });
+        
+        setAppliedStoreWideVouchers(restoredStoreWideVouchers);
+      }
+      
+      // Restore product vouchers from params
+      // Note: Product vouchers in CheckoutScreen use productId as key, not cartItemId
+      // We need to map cartItemId to productId
+      if (params.productVouchers && params.cart) {
+        const restoredProductVouchers: Record<string, AppliedStoreVoucher> = {};
+        
+        Object.entries(params.productVouchers).forEach(([cartItemId, voucher]) => {
+          const cartItem = params.cart!.items.find((item) => item.cartItemId === cartItemId);
+          if (cartItem) {
+            const productId = cartItem.refId;
+            restoredProductVouchers[productId] = {
+              voucherId: voucher.shopVoucherId,
+              code: voucher.code,
+              storeId: '', // Will be filled when product cache is loaded
+              discountValue: 0, // Will be recalculated
+              type: 'PERCENT', // Default, will be updated when vouchers are loaded
+            };
+          }
+        });
+        
+        setAppliedStoreVouchers(restoredProductVouchers);
+      }
     }
-  }, [route.params?.cart]);
+  }, [route.params]);
 
   // Load data only once when screen mounts or when authenticated
+  // Skip loading cart if cart is already provided from navigation params
   useEffect(() => {
     if (isAuthenticated && !hasLoadedRef.current) {
-      // log.log('[CheckoutScreen] Initial load: Loading data...');
-      loadData();
-      hasLoadedRef.current = true;
+      // If cart is provided from params, only load addresses
+      if (route.params?.cart) {
+        const customerId = authState.decodedToken?.customerId;
+        const accessToken = authState.accessToken;
+        if (customerId && accessToken) {
+          getCustomerAddresses({ customerId, accessToken })
+            .then((addressData) => {
+              setAddresses(addressData);
+              if (!selectedAddressId && addressData.length > 0) {
+                const defaultAddress = addressData.find((a) => a.default) ?? addressData[0];
+                setSelectedAddressId(defaultAddress.id);
+              }
+            })
+            .catch((error) => {
+              console.error('[CheckoutScreen] Failed to load addresses', error);
+            });
+        }
+        hasLoadedRef.current = true;
+      } else {
+        // No cart from params, load everything
+        loadData();
+        hasLoadedRef.current = true;
+      }
     } else if (!isAuthenticated) {
       throttledLog('not_authenticated', () => {
         log.log('[CheckoutScreen] Not authenticated');
       });
     }
-  }, [isAuthenticated, loadData]);
+  }, [isAuthenticated, loadData, route.params?.cart, authState.decodedToken?.customerId, authState.accessToken, selectedAddressId]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -928,14 +1069,87 @@ const CheckoutScreen: React.FC = () => {
     });
   }, []);
 
-  // Calculate pricing
+  // Calculate pricing - sử dụng preview data nếu có, fallback về tính toán thủ công
   const pricing = useMemo(() => {
+    // Ưu tiên sử dụng preview data từ API
+    if (previewData) {
+      // Tính tổng platformDiscount và storeDiscount từ stores
+      let totalPlatformDiscount = 0;
+      let totalStoreDiscount = 0;
+      
+      // Tính tổng platformDiscount và storeDiscount từ tất cả stores trong preview data
+      // Lấy từ thuộc tính storeDiscount trong response: "storeDiscount": 50000
+      previewData.stores.forEach((store) => {
+        totalPlatformDiscount += store.platformDiscount || 0;
+        totalStoreDiscount += store.storeDiscount || 0; // Lấy từ API response: stores[].storeDiscount
+      });
+      
+      // Fallback: Nếu preview data không có platformDiscount nhưng có thể tính từ cart items
+      if (totalPlatformDiscount === 0 && cart && cartItems.length > 0) {
+        const subtotalBeforePlatformDiscount = cartItems.reduce(
+          (sum, item) => sum + item.originalPrice * item.quantity,
+          0,
+        );
+        const subtotalAfterPlatformDiscount = cartItems.reduce(
+          (sum, item) => sum + item.finalPrice * item.quantity,
+          0,
+        );
+        totalPlatformDiscount = Math.max(
+          0,
+          subtotalBeforePlatformDiscount - subtotalAfterPlatformDiscount,
+        );
+      }
+      
+      // Fallback: Nếu preview data không có storeDiscount nhưng có applied vouchers, tính từ applied vouchers
+      if (totalStoreDiscount === 0) {
+        const storeVoucherDiscount = Object.values(appliedStoreVouchers).reduce(
+          (sum, v) => sum + v.discountValue,
+          0,
+        );
+        const storeWideVoucherDiscount = Object.values(appliedStoreWideVouchers).reduce(
+          (sum, v) => sum + v.discountValue,
+          0,
+        );
+        totalStoreDiscount = Math.round(storeVoucherDiscount + storeWideVoucherDiscount);
+      }
+      
+      // Verify: overallDiscount should equal platformDiscount + storeDiscount
+      // overallDiscount = 365000 = platformDiscount (315000) + storeDiscount (50000)
+      const calculatedTotalDiscount = totalPlatformDiscount + totalStoreDiscount;
+      
+      // Tính tổng cộng: nếu có platform discount từ fallback, cần tính lại
+      // Công thức: Giá gốc - Giảm nền tảng - Giảm voucher cửa hàng + Phí vận chuyển
+      let calculatedTotal = previewData.overallGrandTotal;
+      
+      // Nếu có platform discount từ fallback (không có trong preview data), tính lại total
+      if (totalPlatformDiscount > 0) {
+        // Tính lại từ đầu: subtotal - platformDiscount - storeDiscount + shipping
+        calculatedTotal = Math.max(
+          0,
+          Math.round(
+            previewData.overallSubtotal - totalPlatformDiscount - totalStoreDiscount + previewData.overallShipping,
+          ),
+        );
+      }
+      
+      return {
+        subtotalBeforePlatformDiscount: previewData.overallSubtotal,
+        subtotalAfterPlatformDiscount: previewData.overallSubtotal - totalPlatformDiscount,
+        totalPlatformDiscount,
+        storeDiscount: totalStoreDiscount,
+        voucherDiscount: previewData.overallDiscount, // Tổng discount từ API (platform + store)
+        shippingFee: previewData.overallShipping,
+        total: calculatedTotal,
+      };
+    }
+
+    // Fallback: tính toán thủ công nếu chưa có preview data
     if (!cart || cartItems.length === 0) {
-      // log.log('[CheckoutScreen] pricing: No cart or empty items');
       return {
         subtotalBeforePlatformDiscount: 0,
         subtotalAfterPlatformDiscount: 0,
         totalPlatformDiscount: 0,
+        storeDiscount: 0,
         voucherDiscount: 0,
         shippingFee: 0,
         total: 0,
@@ -964,35 +1178,267 @@ const CheckoutScreen: React.FC = () => {
       (sum, v) => sum + v.discountValue,
       0,
     );
-    const voucherDiscount = Math.round(storeVoucherDiscount + storeWideVoucherDiscount);
+    
+    // Tính store discount riêng
+    const storeDiscount = Math.round(storeVoucherDiscount + storeWideVoucherDiscount);
+    const voucherDiscount = storeDiscount; // Fallback: chỉ có store discount
 
     const total = Math.max(
       0,
       Math.round(
-        subtotalBeforePlatformDiscount - totalPlatformDiscount - voucherDiscount + shippingFee,
+        subtotalBeforePlatformDiscount - totalPlatformDiscount - storeDiscount + shippingFee,
       ),
     );
-
-    // log.log('[CheckoutScreen] pricing: Calculated', {
-    //   subtotalBeforePlatformDiscount,
-    //   subtotalAfterPlatformDiscount,
-    //   totalPlatformDiscount,
-    //   storeVoucherDiscount,
-    //   storeWideVoucherDiscount,
-    //   voucherDiscount,
-    //   shippingFee,
-    //   total,
-    // });
 
     return {
       subtotalBeforePlatformDiscount,
       subtotalAfterPlatformDiscount,
       totalPlatformDiscount,
+      storeDiscount,
       voucherDiscount,
       shippingFee,
       total,
     };
-  }, [cart, cartItems, appliedStoreVouchers, appliedStoreWideVouchers, shippingFee]);
+  }, [
+    previewData,
+    cart,
+    cartItems,
+    appliedStoreVouchers,
+    appliedStoreWideVouchers,
+    shippingFee,
+  ]);
+  
+  // Debug: Log để kiểm tra (chỉ log khi cần thiết, không log thường xuyên)
+  // useEffect(() => {
+  //   if (previewData) {
+  //     console.log('[CheckoutScreen] Pricing from preview data:', {
+  //       previewPlatformDiscount: previewData.stores.reduce((sum, s) => sum + (s.platformDiscount || 0), 0),
+  //       previewStoreDiscount: previewData.stores.reduce((sum, s) => sum + (s.storeDiscount || 0), 0),
+  //       calculatedPlatformDiscount: pricing.totalPlatformDiscount,
+  //       calculatedStoreDiscount: pricing.storeDiscount,
+  //       hasCartItems: cartItems.length > 0,
+  //     });
+  //   }
+  // }, [previewData, pricing.totalPlatformDiscount, pricing.storeDiscount, cartItems.length]);
+  
+  // Debug: Log pricing để kiểm tra storeDiscount (chỉ log khi cần thiết, không log thường xuyên)
+  // useEffect(() => {
+  //   console.log('[CheckoutScreen] Pricing calculated:', {
+  //     subtotalBeforePlatformDiscount: pricing.subtotalBeforePlatformDiscount,
+  //     totalPlatformDiscount: pricing.totalPlatformDiscount,
+  //     storeDiscount: pricing.storeDiscount,
+  //     shippingFee: pricing.shippingFee,
+  //     total: pricing.total,
+  //     hasPreviewData: !!previewData,
+  //     previewDataStores: previewData ? previewData.stores.map(s => ({
+  //       storeId: s.storeId,
+  //       storeName: s.storeName,
+  //       platformDiscount: s.platformDiscount,
+  //       storeDiscount: s.storeDiscount,
+  //       subtotal: s.subtotal,
+  //       shippingFee: s.shippingFee,
+  //       grandTotal: s.grandTotal,
+  //     })) : null,
+  //     previewOverallSubtotal: previewData?.overallSubtotal,
+  //     previewOverallShipping: previewData?.overallShipping,
+  //     previewOverallDiscount: previewData?.overallDiscount,
+  //     previewOverallGrandTotal: previewData?.overallGrandTotal,
+  //     appliedStoreVouchersCount: Object.keys(appliedStoreVouchers).length,
+  //     appliedStoreWideVouchersCount: Object.keys(appliedStoreWideVouchers).length,
+  //   });
+  // }, [pricing, previewData, appliedStoreVouchers, appliedStoreWideVouchers]);
+
+  // Build preview payload for checkout preview API
+  const buildPreviewPayload = useCallback((): CheckoutPreviewRequest | null => {
+    if (!cart || cartItems.length === 0) {
+      return null;
+    }
+
+    // Build items
+    const items: CheckoutPreviewRequest['items'] = cartItems.map((item) => {
+      const baseItem: CheckoutPreviewRequest['items'][0] = {
+        type: 'PRODUCT',
+        quantity: item.quantity,
+      };
+
+      // Check if item is COMBO
+      const isCombo = item.type === 'COMBO';
+      if (isCombo) {
+        baseItem.type = 'COMBO';
+        baseItem.comboId = item.refId;
+        return baseItem;
+      }
+
+      // PRODUCT
+      if (item.variantId !== null && item.variantId !== undefined) {
+        baseItem.variantId = item.variantId;
+      } else {
+        baseItem.productId = item.refId;
+      }
+      return baseItem;
+    });
+
+    // Build store vouchers (group by storeId with codes array)
+    const storeVouchersMap: Record<string, string[]> = {};
+    Object.values(appliedStoreVouchers).forEach((v) => {
+      if (!storeVouchersMap[v.storeId]) {
+        storeVouchersMap[v.storeId] = [];
+      }
+      storeVouchersMap[v.storeId].push(v.code);
+    });
+    Object.values(appliedStoreWideVouchers).forEach((v) => {
+      if (!storeVouchersMap[v.storeId]) {
+        storeVouchersMap[v.storeId] = [];
+      }
+      storeVouchersMap[v.storeId].push(v.code);
+    });
+
+    const storeVouchers = Object.entries(storeVouchersMap).map(([storeId, codes]) => ({
+      storeId,
+      codes,
+    }));
+
+    // Build platform vouchers (group by campaignProductId)
+    const platformVouchersMap: Record<string, number> = {};
+    cartItems.forEach((item) => {
+      const productId = item.refId;
+      const platformDiscount = platformVoucherDiscounts[productId];
+      if (platformDiscount?.campaignProductId) {
+        const key = platformDiscount.campaignProductId;
+        platformVouchersMap[key] = (platformVouchersMap[key] || 0) + item.quantity;
+      }
+    });
+
+    const platformVouchers = Object.entries(platformVouchersMap).map(([campaignProductId, quantity]) => ({
+      campaignProductId,
+      quantity,
+    }));
+
+    // Calculate serviceTypeIds for each store
+    const serviceTypeIds: Record<string, number> = {};
+    const itemsByStore: Record<string, typeof cartItems> = {};
+    cartItems.forEach((item) => {
+      const cache = productCache[item.refId];
+      if (!cache?.storeId) return;
+      const storeId = cache.storeId;
+      if (!itemsByStore[storeId]) {
+        itemsByStore[storeId] = [];
+      }
+      itemsByStore[storeId].push(item);
+    });
+    Object.keys(itemsByStore).forEach((storeId) => {
+      const storeItems = itemsByStore[storeId];
+      serviceTypeIds[storeId] = calculateServiceType(storeItems, productCache);
+    });
+
+    return {
+      items,
+      addressId: selectedAddressId || null,
+      message: null,
+      storeVouchers: storeVouchers.length > 0 ? storeVouchers : null,
+      platformVouchers: platformVouchers.length > 0 ? platformVouchers : null,
+      serviceTypeIds: Object.keys(serviceTypeIds).length > 0 ? serviceTypeIds : null,
+    };
+  }, [
+    cart?.cartId, // Chỉ track cartId thay vì toàn bộ cart object
+    cartItems.length, // Chỉ track length
+    selectedAddressId,
+    // Serialize keys để so sánh thay vì reference
+    JSON.stringify(Object.keys(appliedStoreVouchers).sort()),
+    JSON.stringify(Object.keys(appliedStoreWideVouchers).sort()),
+    JSON.stringify(Object.keys(platformVoucherDiscounts).sort()),
+    JSON.stringify(Object.keys(productCache).sort()),
+  ]);
+
+  // Load checkout preview data - chỉ gọi khi thực sự cần thiết
+  useEffect(() => {
+    if (!selectedAddressId || !cart || cartItems.length === 0) {
+      setPreviewData(null);
+      setPreviewError(null);
+      return;
+    }
+
+    const customerId = authState.decodedToken?.customerId;
+    const accessToken = authState.accessToken;
+    if (!customerId || !accessToken) {
+      return;
+    }
+
+    // Throttle: chỉ gọi nếu đã qua 3 giây kể từ lần gọi trước
+    const now = Date.now();
+    const timeSinceLastCall = now - lastPreviewCallRef.current;
+    if (timeSinceLastCall < PREVIEW_THROTTLE_MS) {
+      // Chưa đủ thời gian, bỏ qua
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        setIsLoadingPreview(true);
+        setPreviewError(null);
+
+        const payload = buildPreviewPayload();
+        if (!payload) {
+          setPreviewData(null);
+          return;
+        }
+
+        // Update last call time
+        lastPreviewCallRef.current = Date.now();
+
+        const preview = await checkoutPreview({ customerId, accessToken, payload });
+        // Debug: Chỉ log khi cần thiết, không log thường xuyên
+        // console.log('[CheckoutScreen] Preview data received:', {
+        //   overallSubtotal: preview.overallSubtotal,
+        //   overallShipping: preview.overallShipping,
+        //   overallDiscount: preview.overallDiscount,
+        //   overallGrandTotal: preview.overallGrandTotal,
+        //   stores: preview.stores.map(s => ({
+        //     storeId: s.storeId,
+        //     storeName: s.storeName,
+        //     subtotal: s.subtotal,
+        //     shippingFee: s.shippingFee,
+        //     platformDiscount: s.platformDiscount,
+        //     storeDiscount: s.storeDiscount,
+        //     discountTotal: s.discountTotal,
+        //     grandTotal: s.grandTotal,
+        //   })),
+        // });
+        
+        setPreviewData(preview);
+
+        // Update shipping fee from preview
+        setShippingFee(preview.overallShipping);
+        
+        // Update store shipping fees and names from preview
+        const storeFeesMap: Record<string, number> = {};
+        const storeNamesMap: Record<string, string> = {};
+        preview.stores.forEach((store) => {
+          storeFeesMap[store.storeId] = store.shippingFee || 0;
+          storeNamesMap[store.storeId] = store.storeName;
+        });
+        setStoreShippingFees(storeFeesMap);
+        setStoreNames(storeNamesMap);
+      } catch (error: any) {
+        console.error('[CheckoutScreen] checkoutPreview: Failed', error);
+        const message =
+          error?.response?.data?.message || 'Không thể tải thông tin checkout. Vui lòng thử lại.';
+        setPreviewError(message);
+        setPreviewData(null);
+      } finally {
+        setIsLoadingPreview(false);
+      }
+    }, 2000); // Debounce 2 seconds
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    selectedAddressId,
+    cart?.cartId, // Chỉ track cartId thay vì toàn bộ cart object
+    cartItems.length, // Chỉ track length thay vì toàn bộ array
+    // Removed buildPreviewPayload from dependencies - sẽ build trong timeout
+    authState.decodedToken?.customerId,
+    authState.accessToken,
+  ]);
 
   // Build checkout payload with proper COMBO and variantId handling
   const buildCheckoutPayload = useCallback(async () => {
@@ -1039,19 +1485,40 @@ const CheckoutScreen: React.FC = () => {
       return basePayload;
     });
 
-    // Step 2: Build store vouchers (array format, not grouped)
-    const storeVouchers = [
-      ...Object.values(appliedStoreVouchers).map((v) => ({
-        voucherId: v.voucherId,
-        code: v.code,
-        storeId: v.storeId,
-      })),
-      ...Object.values(appliedStoreWideVouchers).map((v) => ({
-        voucherId: v.voucherId,
-        code: v.code,
-        storeId: v.storeId,
-      })),
-    ];
+    // Step 2: Build store vouchers (group by storeId with codes array)
+    // Format: [{ storeId: "...", codes: ["code1", "code2"] }]
+    const storeVouchersMap: Record<string, string[]> = {};
+    
+    // Collect codes from appliedStoreVouchers (product vouchers)
+    Object.values(appliedStoreVouchers).forEach((v) => {
+      if (v.storeId && v.code) {
+        if (!storeVouchersMap[v.storeId]) {
+          storeVouchersMap[v.storeId] = [];
+        }
+        if (!storeVouchersMap[v.storeId].includes(v.code)) {
+          storeVouchersMap[v.storeId].push(v.code);
+        }
+      }
+    });
+    
+    // Collect codes from appliedStoreWideVouchers (store-wide vouchers)
+    Object.values(appliedStoreWideVouchers).forEach((v) => {
+      if (v.storeId && v.code) {
+        if (!storeVouchersMap[v.storeId]) {
+          storeVouchersMap[v.storeId] = [];
+        }
+        if (!storeVouchersMap[v.storeId].includes(v.code)) {
+          storeVouchersMap[v.storeId].push(v.code);
+        }
+      }
+    });
+    
+    const storeVouchers = Object.entries(storeVouchersMap)
+      .filter(([_, codes]) => codes.length > 0)
+      .map(([storeId, codes]) => ({
+        storeId,
+        codes,
+      }));
 
     // Step 3: Calculate serviceTypeId for each store
     const serviceTypeIds: Record<string, number> = {};
@@ -1193,17 +1660,20 @@ const CheckoutScreen: React.FC = () => {
       }
     });
 
-    const platformVouchers = Object.values(platformVouchersMap).filter(
-      (v) => v.campaignProductId && v.quantity > 0,
-    );
+    const platformVouchers = Object.values(platformVouchersMap)
+      .filter((v) => v.campaignProductId && v.quantity > 0)
+      .map((v) => ({
+        campaignProductId: v.campaignProductId,
+        quantity: v.quantity,
+      }));
 
     const payload = {
       items,
       addressId: selectedAddressId,
-      message: null,
-      storeVouchers: storeVouchers.length > 0 ? storeVouchers : null,
-      platformVouchers: platformVouchers.length > 0 ? platformVouchers : null,
-      serviceTypeIds: Object.keys(serviceTypeIds).length > 0 ? serviceTypeIds : null,
+      message: '', // Empty string thay vì null
+      storeVouchers: storeVouchers.length > 0 ? storeVouchers : undefined,
+      platformVouchers: platformVouchers.length > 0 ? platformVouchers : undefined,
+      serviceTypeIds: Object.keys(serviceTypeIds).length > 0 ? serviceTypeIds : undefined,
     };
 
     // log.log('[CheckoutScreen] buildCheckoutPayload: Payload built', {
@@ -1310,28 +1780,38 @@ const CheckoutScreen: React.FC = () => {
         //   serviceTypeIds: payload.serviceTypeIds,
         // });
         const result = await checkoutCod({ customerId, accessToken, payload });
-        // log.log('[CheckoutScreen] handleCheckout: COD order successful', {
-        //   orderId: result.orderId,
-        //   orderCode: result.orderCode,
-        //   totalAmount: result.totalAmount,
-        // });
+        
+        // Response là array của orders
+        if (result && Array.isArray(result) && result.length > 0) {
+          const firstOrder = result[0];
+          // log.log('[CheckoutScreen] handleCheckout: COD order successful', {
+          //   orderId: firstOrder.id,
+          //   orderCode: firstOrder.orderCode,
+          //   totalAmount: firstOrder.totalAmount,
+          //   grandTotal: firstOrder.grandTotal,
+          //   ordersCount: result.length,
+          // });
 
-        // Step 3: Success handling - Clear AsyncStorage
-        try {
-          await AsyncStorage.removeItem(CHECKOUT_SESSION_KEY);
-          log.log('[CheckoutScreen] handleCheckout: Cleared checkout session storage');
-        } catch (storageError) {
-          log.error('[CheckoutScreen] handleCheckout: Failed to clear storage', storageError);
+          // Step 3: Success handling - Clear AsyncStorage
+          try {
+            await AsyncStorage.removeItem(CHECKOUT_SESSION_KEY);
+            log.log('[CheckoutScreen] handleCheckout: Cleared checkout session storage');
+          } catch (storageError) {
+            log.error('[CheckoutScreen] handleCheckout: Failed to clear storage', storageError);
+          }
+
+          setSnackbarMessage(`Đặt hàng thành công! Mã đơn: ${firstOrder.orderCode}`);
+          setSnackbarVisible(true);
+
+          // Navigate to Profile (orders screen)
+          setTimeout(() => {
+            // @ts-ignore
+            navigation.navigate('Profile');
+          }, 2000);
+        } else {
+          setSnackbarMessage('Đặt hàng thành công nhưng không nhận được thông tin đơn hàng.');
+          setSnackbarVisible(true);
         }
-
-        setSnackbarMessage('Đặt hàng thành công!');
-        setSnackbarVisible(true);
-
-        // Navigate to Profile (orders screen)
-        setTimeout(() => {
-          // @ts-ignore
-          navigation.navigate('Profile');
-        }, 2000);
       } else {
         // PayOS
         const returnUrl = 'https://audioe-commerce-production.up.railway.app/checkout/success';
@@ -1623,17 +2103,18 @@ const CheckoutScreen: React.FC = () => {
               </Text>
             </View>
           )}
-          {pricing.voucherDiscount > 0 && (
+          {/* Hiển thị giảm giá voucher cửa hàng từ API response: stores[].storeDiscount */}
+          {pricing.storeDiscount > 0 && (
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Giảm voucher</Text>
+              <Text style={styles.summaryLabel}>Giảm giá voucher cửa hàng</Text>
               <Text style={[styles.summaryValue, styles.summaryDiscount]}>
-                -{formatCurrencyVND(pricing.voucherDiscount)}
+                -{formatCurrencyVND(pricing.storeDiscount)}
               </Text>
             </View>
           )}
            <View style={styles.summaryRow}>
              <Text style={styles.summaryLabel}>Phí vận chuyển</Text>
-             {isCalculatingShipping ? (
+             {isLoadingPreview || isCalculatingShipping ? (
                <ActivityIndicator size="small" color={ORANGE} />
              ) : pricing.shippingFee > 0 ? (
                <Text style={styles.summaryValue}>{formatCurrencyVND(pricing.shippingFee)}</Text>
@@ -1641,8 +2122,8 @@ const CheckoutScreen: React.FC = () => {
                <Text style={styles.summaryValue}>{formatCurrencyVND(0)}</Text>
              )}
            </View>
-          {shippingFeeError && (
-            <Text style={styles.errorText}>{shippingFeeError}</Text>
+          {(previewError || shippingFeeError) && (
+            <Text style={styles.errorText}>{previewError || shippingFeeError}</Text>
           )}
           <View style={[styles.summaryRow, styles.summaryTotal]}>
             <Text style={styles.totalLabel}>Tổng cộng</Text>

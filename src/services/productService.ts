@@ -54,7 +54,7 @@ export const getProductById = async (productId: string): Promise<ProductDetail> 
 };
 
 /**
- * GET /api/products/view/{productId}/vouchers
+ * GET /api/products/view/{productId}/vouchers?type=ALL
  * Lấy voucher platform/shop của sản phẩm
  */
 export const getProductVouchers = async (
@@ -62,6 +62,11 @@ export const getProductVouchers = async (
 ): Promise<ProductVouchersResponse['data']> => {
   const { data } = await httpClient.get<ProductVouchersResponse>(
     `/products/view/${productId}/vouchers`,
+    {
+      params: {
+        type: 'ALL',
+      },
+    },
   );
   return data.data;
 };

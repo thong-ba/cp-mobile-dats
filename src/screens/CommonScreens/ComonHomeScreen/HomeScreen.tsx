@@ -59,6 +59,7 @@ type ProductViewItem = {
   variants?: ProductViewVariant[];
   vouchers?: {
     platformVouchers?: {
+      campaignType?: 'FLASH_SALE' | 'MEGA_SALE' | string;
       status?: string;
       badgeLabel?: string;
       badgeColor?: string;
@@ -76,6 +77,9 @@ type ProductViewItem = {
         startTime?: string;
         endTime?: string;
         status?: string;
+        slotOpenTime?: string;
+        slotCloseTime?: string;
+        slotStatus?: string;
       }[];
     }[];
   };
@@ -102,6 +106,8 @@ type ProductCard = {
   priceRange?: { min: number; max: number } | null;
   originalPrice?: number;
   hasDiscount?: boolean;
+  discountPercent?: number;
+  campaignType?: 'FLASH_SALE' | 'MEGA_SALE' | null;
   image: string;
   rating?: number;
 };
@@ -120,91 +126,190 @@ const HomeScreen = () => {
 
   const loadCategories = useCallback(async () => {
     try {
-      const res = await httpClient.get<{ status: number; message: string; data: any[] }>(
-        '/categories',
-      );
-      const mapped: CategoryItem[] = (res.data?.data ?? []).map((item) => ({
-        id: item.categoryId ?? item.id ?? item.name,
-        name: item.name,
-        image: item.iconUrl || FALLBACK_CATEGORY_IMAGE,
-      }));
+      const res = await httpClient.get<{
+        status: number;
+        message: string;
+        data: Array<{
+          categoryId: string;
+          name: string;
+          children: Array<{
+            categoryId: string;
+            name: string;
+            children: any[];
+          }>;
+        }>;
+      }>('/categories/tree');
+
+      // Flatten categories tree: include both parent and children categories
+      const flattenCategories = (categories: typeof res.data.data): CategoryItem[] => {
+        const result: CategoryItem[] = [];
+        categories.forEach((category) => {
+          // Add parent category
+          result.push({
+            id: category.categoryId,
+            name: category.name,
+            image: FALLBACK_CATEGORY_IMAGE,
+          });
+          // Add children categories if any
+          if (category.children && category.children.length > 0) {
+            category.children.forEach((child) => {
+              result.push({
+                id: child.categoryId,
+                name: child.name,
+                image: FALLBACK_CATEGORY_IMAGE,
+              });
+            });
+          }
+        });
+        return result;
+      };
+
+      const mapped = flattenCategories(res.data?.data ?? []);
       setCategories(mapped);
     } catch (error: any) {
-      // 405 means method not allowed - API might not support GET or endpoint changed
-      // Silently handle this error to avoid console spam on app start
-      if (error?.response?.status === 405) {
-        // Method not allowed - endpoint might not exist or use different method
-        // Just set empty categories, don't log error
-        setCategories([]);
-        return;
-      }
-      // Only log non-405 errors
-      if (error?.response?.status !== 405) {
-        console.error('fetchCategories error', error);
-      }
-      // Set empty categories on any error to prevent UI issues
+      console.error('fetchCategories error', error);
+      // Set empty categories on error to prevent UI issues
       setCategories([]);
     }
   }, []);
 
   const calculatePricing = (product: ProductViewItem) => {
-    // Determine base/original price
+    // Step 1: Xác định giá gốc (Original Price)
+    // Ưu tiên giá từ variants nếu có, lấy giá thấp nhất
     let originalPrice = 0;
     if (product.variants && product.variants.length > 0) {
       const variantPrices = product.variants
-        .map((v) => v.price ?? v.variantPrice)
-        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        .map((v) => v.price ?? v.variantPrice ?? 0)
+        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v) && v > 0);
       if (variantPrices.length > 0) {
         originalPrice = Math.min(...variantPrices);
       }
     }
+    // Nếu không có variants hoặc variants không hợp lệ, dùng product.price
     if (!originalPrice) {
-      originalPrice =
-        product.price ??
-        product.finalPrice ??
-        product.priceAfterPromotion ??
-        product.discountPrice ??
-        0;
+      originalPrice = product.price ?? 0;
     }
+
+    // Step 2: Kiểm tra campaign
+    const hasCampaign =
+      product.vouchers?.platformVouchers && product.vouchers.platformVouchers.length > 0;
+
+    // Step 3: Xác định có cần tính toán discount không
+    // Chỉ tính toán khi:
+    // - Backend chưa tính sẵn discountPrice hoặc finalPrice
+    // - Hoặc finalPrice bằng originalPrice (chưa có discount)
+    // - Giá gốc > 0
+    // - Sản phẩm có campaign
+    const needsCampaignCalculation =
+      (product.discountPrice === null || product.discountPrice === undefined) &&
+      (product.finalPrice === null ||
+        product.finalPrice === undefined ||
+        product.finalPrice === originalPrice) &&
+      originalPrice > 0 &&
+      hasCampaign;
 
     let discountedPrice = originalPrice;
     let hasDiscount = false;
+    let discountPercent = 0;
+    let campaignType: 'FLASH_SALE' | 'MEGA_SALE' | null = null;
 
-    const firstCampaign = product.vouchers?.platformVouchers?.[0];
-    const firstVoucher = firstCampaign?.vouchers?.[0];
-    const now = new Date();
+    // Step 4-5: Kiểm tra và tính toán discount nếu cần
+    if (needsCampaignCalculation) {
+      const campaign = product.vouchers?.platformVouchers?.[0];
+      const voucher = campaign?.vouchers?.[0];
+      const now = new Date();
 
-    const isCampaignActive =
-      firstCampaign?.status === 'ACTIVE' &&
-      (!firstCampaign.startTime || new Date(firstCampaign.startTime) <= now) &&
-      (!firstCampaign.endTime || new Date(firstCampaign.endTime) >= now);
-
-    const isVoucherActive =
-      firstVoucher &&
-      (firstVoucher.status === 'ACTIVE' || !firstVoucher.status) &&
-      (!firstVoucher.startTime || new Date(firstVoucher.startTime) <= now) &&
-      (!firstVoucher.endTime || new Date(firstVoucher.endTime) >= now);
-
-    if (isCampaignActive && isVoucherActive && firstVoucher) {
-      if (firstVoucher.type === 'PERCENT' && firstVoucher.discountPercent) {
-        const discountValue = (originalPrice * firstVoucher.discountPercent) / 100;
-        const capped =
-          firstVoucher.maxDiscountValue !== null && firstVoucher.maxDiscountValue !== undefined
-            ? Math.min(discountValue, firstVoucher.maxDiscountValue)
-            : discountValue;
-        discountedPrice = Math.max(0, originalPrice - capped);
-      } else if (firstVoucher.type === 'FIXED' && firstVoucher.discountValue) {
-        discountedPrice = Math.max(0, originalPrice - firstVoucher.discountValue);
+      // Xác định campaign type
+      if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
+        campaignType = campaign.campaignType;
       }
-      hasDiscount = discountedPrice < originalPrice;
+
+      let isVoucherActive = false;
+
+      // Step 5: Kiểm tra voucher active
+      if (voucher) {
+        // Flash Sale: sử dụng slot time
+        if (voucher.slotOpenTime && voucher.slotCloseTime) {
+          const slotOpen = new Date(voucher.slotOpenTime);
+          const slotClose = new Date(voucher.slotCloseTime);
+          isVoucherActive =
+            now >= slotOpen && now <= slotClose && voucher.slotStatus === 'ACTIVE';
+        }
+        // Mega Sale / Regular Campaign: sử dụng voucher time
+        else if (voucher.startTime && voucher.endTime) {
+          const startTime = new Date(voucher.startTime);
+          const endTime = new Date(voucher.endTime);
+          isVoucherActive = now >= startTime && now <= endTime && voucher.status === 'ACTIVE';
+        }
+        // Fallback: chỉ kiểm tra status
+        else {
+          isVoucherActive = voucher.status === 'ACTIVE';
+        }
+      }
+
+      // Step 6: Áp dụng discount nếu voucher active
+      if (isVoucherActive && voucher) {
+        if (voucher.type === 'PERCENT' && voucher.discountPercent) {
+          // Tính số tiền giảm
+          const discountAmount = (originalPrice * voucher.discountPercent) / 100;
+
+          // Áp dụng maxDiscountValue nếu có (giới hạn giảm tối đa)
+          const finalDiscount =
+            voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
+              ? Math.min(discountAmount, voucher.maxDiscountValue)
+              : discountAmount;
+
+          // Tính giá cuối cùng
+          discountedPrice = Math.max(0, originalPrice - finalDiscount);
+          discountPercent = voucher.discountPercent;
+          hasDiscount = discountedPrice < originalPrice;
+        } else if (voucher.type === 'FIXED' && voucher.discountValue) {
+          // Tính giá cuối cùng
+          discountedPrice = Math.max(0, originalPrice - voucher.discountValue);
+
+          // Tính phần trăm giảm để hiển thị
+          if (originalPrice > 0) {
+            discountPercent = Math.round((voucher.discountValue / originalPrice) * 100);
+          }
+          hasDiscount = discountedPrice < originalPrice;
+        }
+      }
+    } else if (hasCampaign) {
+      // Backend đã tính sẵn, sử dụng giá từ backend
+      discountedPrice =
+        product.discountPrice ?? product.finalPrice ?? product.priceAfterPromotion ?? originalPrice;
+      hasDiscount = discountedPrice < originalPrice && discountedPrice > 0;
+
+      // Tính discountPercent nếu chưa có
+      if (hasDiscount && originalPrice > 0) {
+        discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
+      }
+
+      // Xác định campaign type
+      const campaign = product.vouchers?.platformVouchers?.[0];
+      if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
+        campaignType = campaign.campaignType;
+      }
+    }
+
+    // Step 7: Fallback và validation
+    // Nếu finalPrice = 0 nhưng originalPrice > 0, dùng originalPrice
+    if (discountedPrice === 0 && originalPrice > 0) {
+      discountedPrice = originalPrice;
+      hasDiscount = false;
+    }
+
+    // Tính discountPercent nếu chưa có
+    if (discountPercent === 0 && originalPrice > 0 && discountedPrice > 0 && discountedPrice < originalPrice) {
+      discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
     }
 
     // Build price range if variants exist
     let priceRange: { min: number; max: number } | null = null;
     if (product.variants && product.variants.length > 0) {
       const variantPrices = product.variants
-        .map((v) => v.price ?? v.variantPrice)
-        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        .map((v) => v.price ?? v.variantPrice ?? 0)
+        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v) && v > 0);
       if (variantPrices.length > 0) {
         priceRange = {
           min: Math.min(...variantPrices),
@@ -213,7 +318,14 @@ const HomeScreen = () => {
       }
     }
 
-    return { originalPrice, discountedPrice, hasDiscount, priceRange };
+    return {
+      originalPrice,
+      discountedPrice,
+      hasDiscount,
+      discountPercent,
+      campaignType,
+      priceRange,
+    };
   };
 
   const loadProducts = useCallback(
@@ -225,14 +337,27 @@ const HomeScreen = () => {
           setIsLoading(true);
         }
         setErrorMessage(null);
-        const response = await httpClient.get<ProductPageResponse>('/products/view', {
-          params: {
-          keyword: appliedKeyword || undefined,
-            categoryId: selectedCategoryId || undefined,
-          status: DEFAULT_STATUS,
+        
+        // Build query params with all supported filters
+        const params: Record<string, any> = {
+          status: DEFAULT_STATUS, // Filter by ACTIVE products only
           page: 0,
           size: PAGE_SIZE,
-          },
+        };
+
+        // Add optional filters
+        if (appliedKeyword && appliedKeyword.trim()) {
+          params.keyword = appliedKeyword.trim();
+        }
+        if (selectedCategoryId) {
+          params.categoryId = selectedCategoryId;
+        }
+        // Sorting: default sort by name ascending
+        params.sortBy = 'name';
+        params.sortDir = 'asc';
+
+        const response = await httpClient.get<ProductPageResponse>('/products/view', {
+          params,
         });
         const apiProducts = response.data?.data?.data ?? [];
         setProducts(apiProducts);
@@ -265,17 +390,26 @@ const HomeScreen = () => {
   const productCards = useMemo(
     () =>
       products.map((product) => {
-        const { discountedPrice, originalPrice, hasDiscount, priceRange } = calculatePricing(product);
+        const {
+          discountedPrice,
+          originalPrice,
+          hasDiscount,
+          discountPercent,
+          campaignType,
+          priceRange,
+        } = calculatePricing(product);
 
         return {
-        id: product.productId,
-        name: product.name,
+          id: product.productId,
+          name: product.name,
           price: discountedPrice,
           originalPrice,
           hasDiscount,
+          discountPercent,
+          campaignType,
           priceRange,
           image: product.thumbnailUrl ?? product.images?.[0] ?? FALLBACK_IMAGE,
-        rating: product.ratingAverage ?? 4.5,
+          rating: product.ratingAverage ?? 4.5,
         };
       }),
     [products],

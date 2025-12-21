@@ -12,11 +12,27 @@ import {
   CheckoutCodResponse,
   CheckoutPayOSRequest,
   CheckoutPayOSResponse,
+  CheckoutPreviewRequest,
+  CheckoutPreviewResponse,
 } from '../types/checkout';
 
 type AuthenticatedCustomerRequest = {
   customerId: string;
   accessToken: string;
+};
+
+// Throttle logging to once per 90 seconds per key
+const lastLogTimeRef: Record<string, number> = {};
+const THROTTLE_INTERVAL_MS = 90000; // 90 seconds
+
+const throttledLog = (key: string, logFn: () => void) => {
+  const now = Date.now();
+  const lastLogTime = lastLogTimeRef[key] || 0;
+  
+  if (now - lastLogTime >= THROTTLE_INTERVAL_MS) {
+    logFn();
+    lastLogTimeRef[key] = now;
+  }
 };
 
 /**
@@ -166,16 +182,20 @@ export const checkoutCod = async ({
   payload: CheckoutCodRequest;
 }): Promise<CheckoutCodResponse['data']> => {
   const endpoint = `/v1/customers/${customerId}/cart/checkout-cod`;
-  console.log('[CartService] checkoutCod: Request', {
-    customerId,
-    endpoint,
-    payload: {
-      itemsCount: payload.items.length,
-      addressId: payload.addressId,
-      hasStoreVouchers: !!payload.storeVouchers,
-      hasPlatformVouchers: !!payload.platformVouchers,
-      hasServiceTypeIds: !!payload.serviceTypeIds,
-    },
+  throttledLog('checkoutCod_request', () => {
+    console.log('[CartService] checkoutCod: Request', {
+      customerId,
+      endpoint,
+      payload: {
+        itemsCount: payload.items.length,
+        addressId: payload.addressId,
+        hasStoreVouchers: !!payload.storeVouchers,
+        hasPlatformVouchers: !!payload.platformVouchers,
+        hasServiceTypeIds: !!payload.serviceTypeIds,
+        storeVouchers: payload.storeVouchers,
+        platformVouchers: payload.platformVouchers,
+      },
+    });
   });
 
   try {
@@ -190,20 +210,21 @@ export const checkoutCod = async ({
       },
     );
 
-    console.log('[CartService] checkoutCod: Response', {
-      status: data.status,
-      message: data.message,
-      hasData: !!data.data,
-      dataKeys: data.data ? Object.keys(data.data) : [],
+    throttledLog('checkoutCod_response', () => {
+      console.log('[CartService] checkoutCod: Response', {
+        status: data.status,
+        message: data.message,
+        ordersCount: Array.isArray(data.data) ? data.data.length : 0,
+        firstOrder: Array.isArray(data.data) && data.data.length > 0 ? {
+          orderCode: data.data[0].orderCode,
+          grandTotal: data.data[0].grandTotal,
+        } : null,
+      });
     });
 
-    // Handle different response formats
-    if (data.data) {
+    // Response is now an array of orders
+    if (data.data && Array.isArray(data.data)) {
       return data.data;
-    }
-    // If response is directly the data (unlikely but handle it)
-    if ((data as any).orderId || (data as any).orderCode) {
-      return (data as any) as CheckoutCodResponse['data'];
     }
     throw new Error('Invalid response format from checkout API');
   } catch (error: any) {
@@ -231,18 +252,20 @@ export const checkoutPayOS = async ({
   payload: CheckoutPayOSRequest;
 }): Promise<CheckoutPayOSResponse['data']> => {
   const endpoint = `/v1/payos/checkout?customerId=${customerId}`;
-  console.log('[CartService] checkoutPayOS: Request', {
-    customerId,
-    endpoint,
-    payload: {
-      itemsCount: payload.items.length,
-      addressId: payload.addressId,
-      hasStoreVouchers: !!payload.storeVouchers,
-      hasPlatformVouchers: !!payload.platformVouchers,
-      hasServiceTypeIds: !!payload.serviceTypeIds,
-      returnUrl: payload.returnUrl,
-      cancelUrl: payload.cancelUrl,
-    },
+  throttledLog('checkoutPayOS_request', () => {
+    console.log('[CartService] checkoutPayOS: Request', {
+      customerId,
+      endpoint,
+      payload: {
+        itemsCount: payload.items.length,
+        addressId: payload.addressId,
+        hasStoreVouchers: !!payload.storeVouchers,
+        hasPlatformVouchers: !!payload.platformVouchers,
+        hasServiceTypeIds: !!payload.serviceTypeIds,
+        returnUrl: payload.returnUrl,
+        cancelUrl: payload.cancelUrl,
+      },
+    });
   });
 
   try {
@@ -257,11 +280,13 @@ export const checkoutPayOS = async ({
       },
     );
 
-    console.log('[CartService] checkoutPayOS: Response', {
-      status: data.status,
-      message: data.message,
-      hasData: !!data.data,
-      dataKeys: data.data ? Object.keys(data.data) : [],
+    throttledLog('checkoutPayOS_response', () => {
+      console.log('[CartService] checkoutPayOS: Response', {
+        status: data.status,
+        message: data.message,
+        hasData: !!data.data,
+        dataKeys: data.data ? Object.keys(data.data) : [],
+      });
     });
 
     // Handle different response formats
@@ -286,4 +311,66 @@ export const checkoutPayOS = async ({
   }
 };
 
+/**
+ * POST /api/v1/customers/{customerId}/cart/checkout/preview
+ * Preview checkout để xem trước thông tin trước khi tạo đơn thực tế
+ */
+export const checkoutPreview = async ({
+  customerId,
+  accessToken,
+  payload,
+}: AuthenticatedCustomerRequest & {
+  payload: CheckoutPreviewRequest;
+}): Promise<CheckoutPreviewResponse['data']> => {
+  const endpoint = `/v1/customers/${customerId}/cart/checkout/preview`;
+  // Logging disabled - called too frequently
+  // console.log('[CartService] checkoutPreview: Request', {
+  //   customerId,
+  //   endpoint,
+  //   payload: {
+  //     itemsCount: payload.items.length,
+  //     addressId: payload.addressId,
+  //     hasStoreVouchers: !!payload.storeVouchers,
+  //     hasPlatformVouchers: !!payload.platformVouchers,
+  //     hasServiceTypeIds: !!payload.serviceTypeIds,
+  //   },
+  // });
 
+  try {
+    const { data } = await httpClient.post<CheckoutPreviewResponse>(endpoint, payload, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Customer-Id': customerId,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    // Logging disabled - called too frequently
+    // console.log('[CartService] checkoutPreview: Response', {
+    //   status: data.status,
+    //   message: data.message,
+    //   hasData: !!data.data,
+    //   overallSubtotal: data.data?.overallSubtotal,
+    //   overallShipping: data.data?.overallShipping,
+    //   overallDiscount: data.data?.overallDiscount,
+    //   overallGrandTotal: data.data?.overallGrandTotal,
+    //   storesCount: data.data?.stores?.length,
+    // });
+
+    if (data.data) {
+      return data.data;
+    }
+
+    throw new Error('Invalid response format from checkout preview API');
+  } catch (error: any) {
+    console.error('[CartService] checkoutPreview: Error', {
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      url: error?.config?.url,
+      method: error?.config?.method,
+      message: error?.message,
+      responseData: error?.response?.data,
+    });
+    throw error;
+  }
+};

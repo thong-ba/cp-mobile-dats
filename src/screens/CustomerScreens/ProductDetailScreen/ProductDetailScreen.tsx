@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { Chip, Snackbar } from 'react-native-paper';
+import RenderHTML from 'react-native-render-html';
 import { useAuth } from '../../../context/AuthContext';
 import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
 import {
@@ -24,7 +25,9 @@ import {
 } from '../../../services/cartService';
 import { getProductById, getProductVouchers } from '../../../services/productService';
 import { CartItem } from '../../../types/cart';
-import { PlatformCampaign, PlatformVoucherItem, ProductDetail } from '../../../types/product';
+import { PlatformCampaign, ProductDetail, ProductVariant } from '../../../types/product';
+import { cleanHtmlContent } from '../../../utils/htmlUtils';
+import { calculateProductPrice } from '../../../utils/productPriceCalculator';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF6A00';
@@ -46,7 +49,8 @@ const ProductDetailScreen: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<ProductVariant | null>(null);
+  const [hoveredVariantImage, setHoveredVariantImage] = useState<string | null>(null);
   const [selectedComboId, setSelectedComboId] = useState<string | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
@@ -65,43 +69,155 @@ const ProductDetailScreen: React.FC = () => {
   const addToCartButtonRef = useRef<View>(null);
   const cartIconRef = useRef<View>(null);
 
-  const loadProduct = async (isPullRefresh = false) => {
-    try {
-      if (isPullRefresh) {
-        setIsRefreshing(true);
-      } else {
-        setIsLoading(true);
+  const loadProduct = useCallback(
+    async (isPullRefresh = false) => {
+      try {
+        if (isPullRefresh) {
+          setIsRefreshing(true);
+        } else {
+          setIsLoading(true);
+        }
+        setErrorMessage(null);
+
+        // Fetch both APIs in parallel
+        const [detailData, voucherData] = await Promise.all([
+          getProductById(productId),
+          getProductVouchers(productId).catch((e) => {
+            console.warn('[ProductDetailScreen] Voucher load error', e);
+            return null; // Voucher error không block product display
+          }),
+        ]);
+
+        setProduct(detailData);
+        // Support both 'platform' and 'platformVouchers' keys for backward compatibility
+        const vouchersData = voucherData?.vouchers;
+        const platforms =
+          (vouchersData && 'platformVouchers' in vouchersData && Array.isArray(vouchersData.platformVouchers)
+            ? (vouchersData.platformVouchers as PlatformCampaign[])
+            : null) ??
+          (vouchersData && 'platform' in vouchersData && Array.isArray(vouchersData.platform)
+            ? vouchersData.platform
+            : null) ??
+          [];
+        setPlatformCampaigns(platforms);
+        console.log('[ProductDetailScreen] Loaded campaigns:', {
+          count: platforms.length,
+          campaigns: platforms.map((c) => ({
+            campaignId: c.campaignId,
+            type: c.campaignType,
+            name: c.name,
+            status: c.status,
+            badgeLabel: c.badgeLabel,
+            vouchers: c.vouchers?.map((v) => ({
+              type: v.type,
+              discountPercent: v.discountPercent,
+              discountValue: v.discountValue,
+              maxDiscountValue: v.maxDiscountValue,
+              status: v.status,
+            })) || [],
+          })),
+        });
+
+        // Reset variant selection when product changes
+        setSelectedVariant(null);
+        setHoveredVariantImage(null);
+      } catch (error: any) {
+        console.error('[ProductDetailScreen] loadProduct failed', error);
+        const message =
+          error?.response?.status === 404
+            ? 'Sản phẩm không tồn tại'
+            : error?.response?.status === 401
+            ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+            : error?.message?.includes('Network')
+            ? 'Không có kết nối mạng. Vui lòng thử lại.'
+            : 'Không thể tải thông tin sản phẩm. Vui lòng thử lại.';
+        setErrorMessage(message);
+      } finally {
+        if (isPullRefresh) {
+          setIsRefreshing(false);
+        } else {
+          setIsLoading(false);
+        }
       }
-      setErrorMessage(null);
-      const [detailData, voucherData] = await Promise.all([
-        getProductById(productId),
-        getProductVouchers(productId).catch(() => null),
-      ]);
-      setProduct(detailData);
-      setPlatformCampaigns(voucherData?.vouchers?.platform ?? []);
-    } catch (error: any) {
-      console.error('[ProductDetailScreen] loadProduct failed', error);
-      const message =
-        error?.response?.status === 404
-          ? 'Sản phẩm không tồn tại'
-          : error?.response?.status === 401
-          ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
-          : error?.message?.includes('Network')
-          ? 'Không có kết nối mạng. Vui lòng thử lại.'
-          : 'Không thể tải thông tin sản phẩm. Vui lòng thử lại.';
-      setErrorMessage(message);
-    } finally {
-      if (isPullRefresh) {
-        setIsRefreshing(false);
-      } else {
-        setIsLoading(false);
-      }
-    }
-  };
+    },
+    [productId],
+  );
 
   useEffect(() => {
     loadProduct();
-  }, [productId]);
+  }, [loadProduct]);
+
+  // Calculate pricing using utility function (must be before early returns)
+  const pricing = useMemo(() => {
+    if (!product) {
+      return {
+        originalPrice: 0,
+        finalPrice: 0,
+        displayPrice: 0,
+        priceRangeText: null,
+        discountedPriceRangeText: null,
+        discountPercent: 0,
+        campaignBadge: null,
+        hasDiscount: false,
+      };
+    }
+    const result = calculateProductPrice(product, platformCampaigns, selectedVariant);
+    console.log('[ProductDetailScreen] Pricing calculated:', {
+      originalPrice: result.originalPrice,
+      displayPrice: result.displayPrice,
+      hasDiscount: result.hasDiscount,
+      discountPercent: result.discountPercent,
+      campaignBadge: result.campaignBadge,
+      campaignsCount: platformCampaigns.length,
+    });
+    return result;
+  }, [product, platformCampaigns, selectedVariant]);
+
+  // Determine main image (with variant override) (must be before early returns)
+  const mainImage = useMemo(() => {
+    if (!product) return '';
+    // Priority: hovered variant image > selected variant image > product images
+    if (hoveredVariantImage) {
+      return hoveredVariantImage;
+    }
+    if (selectedVariant?.variantUrl) {
+      return selectedVariant.variantUrl;
+    }
+    return product.images?.[selectedImageIndex] || product.images?.[0] || '';
+  }, [product, hoveredVariantImage, selectedVariant, selectedImageIndex]);
+
+  // Handle variant selection
+  const handleVariantSelect = useCallback(
+    (variant: ProductVariant) => {
+      if (selectedVariant?.variantId === variant.variantId) {
+        // Deselect - quay về trạng thái ban đầu
+        setSelectedVariant(null);
+        setHoveredVariantImage(null);
+      } else {
+        // Select variant mới
+        setSelectedVariant(variant);
+        setHoveredVariantImage(variant.variantUrl || null);
+      }
+    },
+    [selectedVariant],
+  );
+
+  // Handle variant hover (for image preview)
+  const handleVariantHover = useCallback(
+    (variant: ProductVariant | null) => {
+      if (variant && variant.variantUrl) {
+        // Hover vào variant → hiển thị tạm thời hình ảnh variant
+        setHoveredVariantImage(variant.variantUrl);
+      } else if (!selectedVariant) {
+        // Không hover và chưa chọn variant → clear override
+        setHoveredVariantImage(null);
+      } else if (selectedVariant) {
+        // Hover kết thúc nhưng đã chọn variant → hiển thị variant đã chọn
+        setHoveredVariantImage(selectedVariant.variantUrl || null);
+      }
+    },
+    [selectedVariant],
+  );
 
   const startAddToCartAnimation = () => {
     setShowAnimation(true);
@@ -173,7 +289,7 @@ const ProductDetailScreen: React.FC = () => {
     }
 
     // Validate variant selection
-    if (product.variants && product.variants.length > 0 && !selectedVariantId) {
+    if (product.variants && product.variants.length > 0 && !selectedVariant) {
       setSnackbarMessage('Vui lòng chọn biến thể trước khi thêm vào giỏ hàng');
       setSnackbarVisible(true);
       return;
@@ -186,15 +302,15 @@ const ProductDetailScreen: React.FC = () => {
       let existingCartItem = null;
       try {
         const currentCart = await getCustomerCart({ customerId, accessToken });
-        
+
         // Find existing item with same productId/variantId
         existingCartItem = currentCart.items.find((item: CartItem) => {
           // Match by variantId if both have variantId
-          if (selectedVariantId && item.variantId) {
-            return item.variantId === selectedVariantId && item.refId === product.productId;
+          if (selectedVariant?.variantId && item.variantId) {
+            return item.variantId === selectedVariant.variantId && item.refId === product.productId;
           }
           // Match by productId if no variant
-          if (!selectedVariantId && !item.variantId) {
+          if (!selectedVariant && !item.variantId) {
             return item.refId === product.productId;
           }
           return false;
@@ -230,7 +346,7 @@ const ProductDetailScreen: React.FC = () => {
                 : selectedComboId
                 ? ''
                 : product.productId,
-            variantId: selectedVariantId || '',
+            variantId: selectedVariant?.variantId || '',
             comboId: selectedComboId || '',
             quantity: 1,
           },
@@ -294,119 +410,6 @@ const ProductDetailScreen: React.FC = () => {
     return null;
   }
 
-  const mainImage = product.images?.[selectedImageIndex] || product.images?.[0] || '';
-
-  // Pricing logic with platform/flash sale vouchers
-  const computePricing = () => {
-    // base prices from variants or product
-    const variantPrices =
-      product.variants?.map((v) => v.variantPrice ?? 0).filter((p) => p > 0) ?? [];
-    let basePrices: number[] = [];
-    if (product.variants && product.variants.length > 0) {
-      if (selectedVariantId) {
-        const selected = product.variants.find((v) => v.variantId === selectedVariantId);
-        if (selected) {
-          basePrices = [selected.variantPrice ?? 0];
-        }
-      }
-      if (basePrices.length === 0) {
-        basePrices = variantPrices.length > 0 ? variantPrices : [0];
-      }
-    } else {
-      basePrices = [
-        product.price ??
-          product.finalPrice ??
-          product.priceAfterPromotion ??
-          product.discountPrice ??
-          0,
-      ];
-    }
-
-    // pick active campaign + voucher
-    const now = new Date();
-    const isActiveCampaign = (c?: PlatformCampaign | null) => {
-      if (!c) return false;
-      const hasSlot = c.vouchers?.[0]?.slotOpenTime && c.vouchers?.[0]?.slotCloseTime;
-      if (hasSlot) {
-        const slotOpen = c.vouchers?.[0]?.slotOpenTime ? new Date(c.vouchers[0].slotOpenTime!) : null;
-        const slotClose = c.vouchers?.[0]?.slotCloseTime ? new Date(c.vouchers[0].slotCloseTime!) : null;
-        const slotStatus = c.vouchers?.[0]?.slotStatus;
-        if (slotOpen && slotClose && slotStatus === 'ACTIVE') {
-          return slotOpen <= now && now <= slotClose;
-        }
-      }
-      const start = c.startTime ? new Date(c.startTime) : null;
-      const end = c.endTime ? new Date(c.endTime) : null;
-      const campaignActive = c.status === 'ACTIVE' && (!start || start <= now) && (!end || end >= now);
-      return campaignActive;
-    };
-
-    const isActiveVoucher = (v?: PlatformVoucherItem | null) => {
-      if (!v) return false;
-      const start = v.startTime ? new Date(v.startTime) : null;
-      const end = v.endTime ? new Date(v.endTime) : null;
-      const voucherActive = (v.status === 'ACTIVE' || !v.status) && (!start || start <= now) && (!end || end >= now);
-      const hasSlot = v.slotOpenTime && v.slotCloseTime;
-      if (hasSlot) {
-        const slotOpen = v.slotOpenTime ? new Date(v.slotOpenTime) : null;
-        const slotClose = v.slotCloseTime ? new Date(v.slotCloseTime) : null;
-        const slotActive = v.slotStatus === 'ACTIVE' && (!slotOpen || slotOpen <= now) && (!slotClose || slotClose >= now);
-        return voucherActive && slotActive;
-      }
-      return voucherActive;
-    };
-
-    const activeCampaign = platformCampaigns.find((c) => isActiveCampaign(c));
-    const activeVoucher = activeCampaign?.vouchers?.find((v) => isActiveVoucher(v));
-
-    const applyVoucher = (price: number) => {
-      if (!activeVoucher || price <= 0) return price;
-      if (activeVoucher.type === 'PERCENT' && activeVoucher.discountPercent) {
-        const discountValue = (price * activeVoucher.discountPercent) / 100;
-        const capped =
-          activeVoucher.maxDiscountValue !== null && activeVoucher.maxDiscountValue !== undefined
-            ? Math.min(discountValue, activeVoucher.maxDiscountValue)
-            : discountValue;
-        return Math.max(0, price - capped);
-      }
-      if (activeVoucher.type === 'FIXED' && activeVoucher.discountValue) {
-        return Math.max(0, price - activeVoucher.discountValue);
-      }
-      return price;
-    };
-
-    const discountedPrices = basePrices.map(applyVoucher);
-    const originalRange =
-      basePrices.length > 1
-        ? { min: Math.min(...basePrices), max: Math.max(...basePrices) }
-        : null;
-    const discountedRange =
-      discountedPrices.length > 1
-        ? { min: Math.min(...discountedPrices), max: Math.max(...discountedPrices) }
-        : null;
-
-    const displayPrice = discountedPrices[0] ?? 0;
-    const originalPrice = basePrices[0] ?? 0;
-    const hasDiscount = discountedPrices.some((p, idx) => p < (basePrices[idx] ?? p));
-
-    return {
-      displayPrice,
-      originalPrice,
-      hasDiscount,
-      originalRange,
-      discountedRange,
-      badge: activeCampaign
-        ? {
-            label: activeCampaign.badgeLabel,
-            color: activeCampaign.badgeColor,
-            iconUrl: activeCampaign.badgeIconUrl,
-          }
-        : null,
-    };
-  };
-
-  const pricing = computePricing();
-
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -460,10 +463,18 @@ const ProductDetailScreen: React.FC = () => {
                 {product.images.map((image, index) => (
                   <TouchableOpacity
                     key={index}
-                    onPress={() => setSelectedImageIndex(index)}
+                    onPress={() => {
+                      setSelectedImageIndex(index);
+                      // Clear variant image override when user manually selects image
+                      if (hoveredVariantImage && !selectedVariant) {
+                        setHoveredVariantImage(null);
+                      }
+                    }}
                     style={[
                       styles.thumbnail,
-                      selectedImageIndex === index && styles.thumbnailSelected,
+                      selectedImageIndex === index && !hoveredVariantImage && !selectedVariant?.variantUrl
+                        ? styles.thumbnailSelected
+                        : null,
                     ]}
                   >
                     <Image source={{ uri: image }} style={styles.thumbnailImage} />
@@ -490,31 +501,37 @@ const ProductDetailScreen: React.FC = () => {
           )}
 
           <View style={styles.priceRow}>
-            <Text style={styles.finalPrice}>
-              {pricing.discountedRange
-                ? `${formatCurrencyVND(pricing.discountedRange.min)} - ${formatCurrencyVND(
-                    pricing.discountedRange.max,
-                  )}`
+            {/* Hiển thị giá sau giảm (hoặc giá gốc nếu không có discount) */}
+            <Text style={[styles.finalPrice, pricing.hasDiscount && styles.finalPriceDiscount]}>
+              {pricing.hasDiscount && pricing.discountedPriceRangeText
+                ? pricing.discountedPriceRangeText
+                : pricing.hasDiscount
+                ? formatCurrencyVND(pricing.displayPrice)
+                : pricing.priceRangeText
+                ? pricing.priceRangeText
                 : formatCurrencyVND(pricing.displayPrice)}
             </Text>
-            {pricing.hasDiscount && (
+            {/* Hiển thị giá gốc (gạch ngang) khi có discount */}
+            {pricing.hasDiscount && pricing.originalPrice > 0 && (
               <Text style={styles.originalPrice}>
-                {pricing.originalRange
-                  ? `${formatCurrencyVND(pricing.originalRange.min)} - ${formatCurrencyVND(
-                      pricing.originalRange.max,
-                    )}`
+                {pricing.priceRangeText
+                  ? pricing.priceRangeText
                   : formatCurrencyVND(pricing.originalPrice)}
               </Text>
             )}
-            {pricing.badge?.label ? (
+            {/* Hiển thị badge campaign */}
+            {pricing.campaignBadge && (
               <Chip
                 compact
-                style={[styles.discountChip, pricing.badge.color ? { backgroundColor: pricing.badge.color } : null]}
+                style={[
+                  styles.discountChip,
+                  pricing.campaignBadge.color ? { backgroundColor: pricing.campaignBadge.color } : null,
+                ]}
                 textStyle={{ color: '#FFF', fontWeight: '700' }}
               >
-                {pricing.badge.label || 'Giảm giá'}
+                {pricing.campaignBadge.label}
               </Chip>
-            ) : null}
+            )}
           </View>
 
           {/* Rating & Reviews */}
@@ -564,40 +581,56 @@ const ProductDetailScreen: React.FC = () => {
             <Text style={styles.sectionTitle}>
               Chọn biến thể <Text style={styles.required}>*</Text>
             </Text>
-            {product.variants.map((variant) => (
-              <TouchableOpacity
-                key={variant.variantId}
-                style={[
-                  styles.variantCard,
-                  selectedVariantId === variant.variantId && styles.variantCardSelected,
-                ]}
-                onPress={() => setSelectedVariantId(variant.variantId)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.variantCardContent}>
-                  <View style={styles.variantCardLeft}>
-                    {variant.variantUrl && (
-                      <Image source={{ uri: variant.variantUrl }} style={styles.variantImage} />
-                    )}
-                    <View style={styles.variantInfo}>
-                      <Text style={styles.variantText}>
-                        {variant.optionName}: {variant.optionValue}
-                      </Text>
-                      <Text style={styles.variantStock}>Còn: {variant.variantStock}</Text>
+            {product.variants.map((variant) => {
+              const isSelected = selectedVariant?.variantId === variant.variantId;
+              // Calculate price for this variant
+              const variantPricing = calculateProductPrice(product, platformCampaigns, variant);
+              return (
+                <TouchableOpacity
+                  key={variant.variantId}
+                  style={[styles.variantCard, isSelected && styles.variantCardSelected]}
+                  onPress={() => handleVariantSelect(variant)}
+                  onPressIn={() => handleVariantHover(variant)}
+                  onPressOut={() => handleVariantHover(null)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.variantCardContent}>
+                    <View style={styles.variantCardLeft}>
+                      {variant.variantUrl && (
+                        <Image source={{ uri: variant.variantUrl }} style={styles.variantImage} />
+                      )}
+                      <View style={styles.variantInfo}>
+                        <Text style={styles.variantText}>
+                          {variant.optionName}: {variant.optionValue}
+                        </Text>
+                        <Text style={styles.variantStock}>Còn: {variant.variantStock}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.variantCardRight}>
+                      <View style={styles.variantPriceContainer}>
+                        <Text
+                          style={[
+                            styles.variantPrice,
+                            variantPricing.hasDiscount && styles.variantPriceDiscount,
+                          ]}
+                        >
+                          {formatCurrencyVND(variantPricing.displayPrice)}
+                        </Text>
+                        {variantPricing.hasDiscount && variantPricing.originalPrice > 0 && (
+                          <Text style={styles.variantPriceOriginal}>
+                            {formatCurrencyVND(variantPricing.originalPrice)}
+                          </Text>
+                        )}
+                      </View>
+                      {isSelected && (
+                        <MaterialCommunityIcons name="check-circle" size={24} color={ORANGE} />
+                      )}
                     </View>
                   </View>
-                  <View style={styles.variantCardRight}>
-                    <Text style={styles.variantPrice}>
-                      {formatCurrencyVND(variant.variantPrice)}
-                    </Text>
-                    {selectedVariantId === variant.variantId && (
-                      <MaterialCommunityIcons name="check-circle" size={24} color={ORANGE} />
-                    )}
-                  </View>
-                </View>
-              </TouchableOpacity>
-            ))}
-            {!selectedVariantId && (
+                </TouchableOpacity>
+              );
+            })}
+            {!selectedVariant && (
               <Text style={styles.variantWarning}>
                 Vui lòng chọn biến thể trước khi thêm vào giỏ hàng
               </Text>
@@ -609,7 +642,25 @@ const ProductDetailScreen: React.FC = () => {
         {product.description && product.description !== 'string' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Mô tả sản phẩm</Text>
-            <Text style={styles.description}>{product.description}</Text>
+            <RenderHTML
+              contentWidth={width - 32} // Screen width minus padding
+              source={{ html: cleanHtmlContent(product.description) }}
+              baseStyle={styles.htmlContent}
+              tagsStyles={{
+                p: styles.htmlParagraph,
+                br: styles.htmlBreak,
+                strong: styles.htmlStrong,
+                b: styles.htmlStrong,
+                em: styles.htmlEmphasis,
+                i: styles.htmlEmphasis,
+                ul: styles.htmlList,
+                ol: styles.htmlList,
+                li: styles.htmlListItem,
+              }}
+              defaultTextProps={{
+                style: styles.htmlText,
+              }}
+            />
           </View>
         )}
 
@@ -1186,13 +1237,13 @@ const ProductDetailScreen: React.FC = () => {
           style={[
             styles.addToCartButton,
             (product.stockQuantity === 0 ||
-              (product.variants && product.variants.length > 0 && !selectedVariantId) ||
+              (product.variants && product.variants.length > 0 && !selectedVariant) ||
               isAddingToCart) &&
               styles.disabledButton,
           ]}
           disabled={
             product.stockQuantity === 0 ||
-            (product.variants && product.variants.length > 0 && !selectedVariantId) ||
+            (product.variants && product.variants.length > 0 && !selectedVariant) ||
             isAddingToCart
           }
           onPress={handleAddToCart}
@@ -1454,6 +1505,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: ORANGE,
   },
+  finalPriceDiscount: {
+    color: '#D32F2F',
+  },
   originalPrice: {
     fontSize: 16,
     color: '#999',
@@ -1461,6 +1515,18 @@ const styles = StyleSheet.create({
   },
   discountChip: {
     backgroundColor: '#FFECEC',
+  },
+  variantPriceContainer: {
+    alignItems: 'flex-end',
+  },
+  variantPriceDiscount: {
+    color: '#D32F2F',
+  },
+  variantPriceOriginal: {
+    fontSize: 12,
+    color: '#999',
+    textDecorationLine: 'line-through',
+    marginTop: 2,
   },
   ratingRow: {
     flexDirection: 'row',
@@ -1595,6 +1661,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#444',
     lineHeight: 20,
+  },
+  htmlContent: {
+    fontSize: 14,
+    color: '#444',
+  },
+  htmlText: {
+    fontSize: 14,
+    color: '#444',
+    lineHeight: 22,
+  },
+  htmlParagraph: {
+    marginBottom: 12,
+    marginTop: 0,
+    padding: 0,
+  },
+  htmlBreak: {
+    height: 12,
+  },
+  htmlStrong: {
+    fontWeight: '700',
+    color: '#222',
+  },
+  htmlEmphasis: {
+    fontStyle: 'italic',
+  },
+  htmlList: {
+    marginBottom: 12,
+    paddingLeft: 20,
+  },
+  htmlListItem: {
+    marginBottom: 6,
+    lineHeight: 22,
   },
   bottomBar: {
     flexDirection: 'row',

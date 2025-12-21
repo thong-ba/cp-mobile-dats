@@ -26,10 +26,13 @@ export type ProductResponseItem = {
 
 export type PlatformVoucherItem = {
   platformVoucherId?: string;
+  campaignId?: string;
   type?: 'PERCENT' | 'FIXED';
   discountPercent?: number | null;
   discountValue?: number | null;
   maxDiscountValue?: number | null;
+  minOrderValue?: number | null;
+  usagePerUser?: number | null;
   startTime?: string | null;
   endTime?: string | null;
   status?: string | null;
@@ -40,6 +43,9 @@ export type PlatformVoucherItem = {
 
 export type PlatformCampaign = {
   campaignId?: string;
+  code?: string;
+  name?: string;
+  description?: string;
   campaignType?: string | null;
   badgeLabel?: string | null;
   badgeColor?: string | null;
@@ -54,19 +60,31 @@ export type ProductVouchersResponse = {
   status: number;
   message: string;
   data: {
-    product: {
-      productId: string;
+    productId?: string;
+    name?: string;
+    price?: number | null;
+    discountPrice?: number | null;
+    finalPrice?: number | null;
+    brandName?: string;
+    categories?: Array<{
+      categoryId: string;
+      categoryName: string;
+    }>;
+    thumbnailUrl?: string;
+    variants?: unknown[];
+    store?: {
+      id: string;
       name: string;
-      price: number | null;
-      discountPrice: number | null;
-      finalPrice: number | null;
-      brandName?: string;
-      category?: string;
-      thumbnailUrl?: string;
+      status: string;
+      provinceCode?: string;
+      districtCode?: string;
+      wardCode?: string;
     };
     vouchers: {
-      shop?: unknown[];
-      platform?: PlatformCampaign[];
+      shopVouchers?: unknown[];
+      platformVouchers?: PlatformCampaign[];
+      shop?: unknown[]; // Backward compatibility
+      platform?: PlatformCampaign[]; // Backward compatibility
     };
   };
 };
