@@ -1,4 +1,5 @@
 import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,6 +20,7 @@ import {
   ProductGrid,
   RatingSection,
 } from '../../../components/CommonScreenComponents/HomeScreenComponents';
+import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
 import { ProductStatus } from '../../../types/product';
 
 const FALLBACK_IMAGE = 'https://placehold.co/600x400?text=Audio+Product';
@@ -112,8 +114,10 @@ type ProductCard = {
   rating?: number;
 };
 
+type HomeScreenNavigationProp = NativeStackNavigationProp<ProductStackParamList, 'Home'>;
+
 const HomeScreen = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<HomeScreenNavigationProp>();
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [searchInput, setSearchInput] = useState('');
   const [appliedKeyword, setAppliedKeyword] = useState('');
@@ -596,15 +600,19 @@ const HomeScreen = () => {
             <PopularSection
               products={popularProducts}
               onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
                 navigation.navigate('ProductDetail', { productId: product.id });
+              }}
+              onPressViewAll={() => {
+                navigation.navigate('ProductList');
               }}
             />
             <ProductGrid
               products={productCards}
               onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
                 navigation.navigate('ProductDetail', { productId: product.id });
+              }}
+              onPressViewAll={() => {
+                navigation.navigate('ProductList');
               }}
             />
             <RatingSection items={ratingItems} />
@@ -615,7 +623,6 @@ const HomeScreen = () => {
                 <TouchableOpacity
                   style={styles.loadMoreButton}
                   onPress={() => {
-                    // @ts-ignore - navigate to ProductList in ProductStack
                     navigation.navigate('ProductList');
                   }}
                 >

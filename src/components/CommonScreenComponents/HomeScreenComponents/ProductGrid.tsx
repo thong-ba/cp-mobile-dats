@@ -18,7 +18,7 @@ type Props = {
   title?: string;
   products: Product[];
   onPressItem?: (product: Product) => void;
-  navigation?: any;
+  onPressViewAll?: () => void;
 };
 
 const formatCurrencyVND = (value: number) =>
@@ -26,12 +26,12 @@ const formatCurrencyVND = (value: number) =>
     value,
   );
 
-const ProductGrid: React.FC<Props> = ({ title = 'Sản phẩm nổi bật', products, onPressItem }) => {
+const ProductGrid: React.FC<Props> = ({ title = 'Sản phẩm nổi bật', products, onPressItem, onPressViewAll }) => {
   return (
     <View style={{ marginTop: 8 }}>
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionTitle}>{title}</Text>
-        <TouchableOpacity>
+        <TouchableOpacity onPress={onPressViewAll}>
           <Text style={styles.viewAll}>Xem tất cả</Text>
         </TouchableOpacity>
       </View>

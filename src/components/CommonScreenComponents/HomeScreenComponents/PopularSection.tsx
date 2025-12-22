@@ -17,14 +17,17 @@ type Product = {
 type Props = {
   products: Product[];
   onPressItem?: (product: Product) => void;
+  onPressViewAll?: () => void;
 };
 
-const PopularSection: React.FC<Props> = ({ products, onPressItem }) => {
+const PopularSection: React.FC<Props> = ({ products, onPressItem, onPressViewAll }) => {
   return (
     <View style={{ marginTop: 8 }}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>Phổ biến</Text>
-        <Text style={styles.viewAll}>Xem tất cả</Text>
+        <TouchableOpacity onPress={onPressViewAll}>
+          <Text style={styles.viewAll}>Xem tất cả</Text>
+        </TouchableOpacity>
       </View>
       <FlatList
         data={products}

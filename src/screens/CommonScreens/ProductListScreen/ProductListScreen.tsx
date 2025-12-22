@@ -2,14 +2,14 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    Image,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import httpClient from '../../../api/httpClient';
 import { ProductStatus } from '../../../types/product';
@@ -132,18 +132,35 @@ const ProductListScreen = () => {
   const [hasMore, setHasMore] = useState(true);
 
   const calculatePricing = (product: ProductViewItem) => {
-    // Step 1: Xác định giá gốc (Original Price)
-    let originalPrice = 0;
+    // Step 1: Lấy tất cả giá từ variants (nếu có)
+    const variantPrices: number[] = [];
     if (product.variants && product.variants.length > 0) {
-      const variantPrices = product.variants
-        .map((v) => v.price ?? v.variantPrice ?? 0)
-        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v) && v > 0);
-      if (variantPrices.length > 0) {
-        originalPrice = Math.min(...variantPrices);
+      product.variants.forEach((v) => {
+        const price = v.price ?? v.variantPrice ?? 0;
+        if (typeof price === 'number' && !Number.isNaN(price) && price > 0) {
+          variantPrices.push(price);
+        }
+      });
+    }
+    
+    // Nếu không có variants, dùng product.price
+    if (variantPrices.length === 0) {
+      const productPrice = product.price ?? 0;
+      if (productPrice > 0) {
+        variantPrices.push(productPrice);
       }
     }
-    if (!originalPrice) {
-      originalPrice = product.price ?? 0;
+
+    // Nếu không có giá nào, return default
+    if (variantPrices.length === 0) {
+      return {
+        originalPrice: 0,
+        discountedPrice: 0,
+        hasDiscount: false,
+        discountPercent: 0,
+        campaignType: null,
+        priceRange: null,
+      };
     }
 
     // Step 2: Kiểm tra campaign
@@ -155,108 +172,160 @@ const ProductListScreen = () => {
       (product.discountPrice === null || product.discountPrice === undefined) &&
       (product.finalPrice === null ||
         product.finalPrice === undefined ||
-        product.finalPrice === originalPrice) &&
-      originalPrice > 0 &&
+        product.finalPrice === Math.min(...variantPrices)) &&
       hasCampaign;
 
-    let discountedPrice = originalPrice;
+    let discountedPrices: number[] = [];
     let hasDiscount = false;
     let discountPercent = 0;
     let campaignType: 'FLASH_SALE' | 'MEGA_SALE' | null = null;
 
-    // Step 4-5: Kiểm tra và tính toán discount nếu cần
+    // Step 4-5: Tính discount cho TỪNG variant (nếu có campaign)
     if (needsCampaignCalculation) {
       const campaign = product.vouchers?.platformVouchers?.[0];
       const voucher = campaign?.vouchers?.[0];
       const now = new Date();
 
+      // Xác định campaign type
       if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
         campaignType = campaign.campaignType;
       }
 
       let isVoucherActive = false;
 
+      // Step 5: Kiểm tra voucher active
       if (voucher) {
+        // Flash Sale: sử dụng slot time
         if (voucher.slotOpenTime && voucher.slotCloseTime) {
           const slotOpen = new Date(voucher.slotOpenTime);
           const slotClose = new Date(voucher.slotCloseTime);
           isVoucherActive =
             now >= slotOpen && now <= slotClose && voucher.slotStatus === 'ACTIVE';
-        } else if (voucher.startTime && voucher.endTime) {
+        }
+        // Mega Sale / Regular Campaign: sử dụng voucher time
+        else if (voucher.startTime && voucher.endTime) {
           const startTime = new Date(voucher.startTime);
           const endTime = new Date(voucher.endTime);
           isVoucherActive = now >= startTime && now <= endTime && voucher.status === 'ACTIVE';
-        } else if (campaign?.startTime && campaign?.endTime) {
-          const startTime = new Date(campaign.startTime);
-          const endTime = new Date(campaign.endTime);
-          isVoucherActive = now >= startTime && now <= endTime && voucher.status === 'ACTIVE';
-        } else {
+        }
+        // Fallback: chỉ kiểm tra status
+        else {
           isVoucherActive = voucher.status === 'ACTIVE';
         }
       }
 
+      // Step 6: Áp dụng discount cho TỪNG variant nếu voucher active
       if (isVoucherActive && voucher) {
-        if (voucher.type === 'PERCENT' && voucher.discountPercent) {
-          const discountAmount = (originalPrice * voucher.discountPercent) / 100;
-          const finalDiscount =
-            voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
-              ? Math.min(discountAmount, voucher.maxDiscountValue)
-              : discountAmount;
-          discountedPrice = Math.max(0, originalPrice - finalDiscount);
-          discountPercent = voucher.discountPercent;
-          hasDiscount = discountedPrice < originalPrice;
-        } else if (voucher.type === 'FIXED' && voucher.discountValue) {
-          discountedPrice = Math.max(0, originalPrice - voucher.discountValue);
-          if (originalPrice > 0) {
-            discountPercent = Math.round((voucher.discountValue / originalPrice) * 100);
+        discountedPrices = variantPrices.map((variantPrice) => {
+          if (voucher.type === 'PERCENT' && voucher.discountPercent) {
+            // Tính số tiền giảm
+            const discountAmount = (variantPrice * voucher.discountPercent) / 100;
+
+            // Áp dụng maxDiscountValue nếu có (giới hạn giảm tối đa)
+            const finalDiscount =
+              voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
+                ? Math.min(discountAmount, voucher.maxDiscountValue)
+                : discountAmount;
+
+            // Tính giá cuối cùng cho variant này
+            return Math.max(0, variantPrice - finalDiscount);
+          } else if (voucher.type === 'FIXED' && voucher.discountValue) {
+            // Tính giá cuối cùng cho variant này
+            return Math.max(0, variantPrice - voucher.discountValue);
           }
-          hasDiscount = discountedPrice < originalPrice;
-        }
+          return variantPrice;
+        });
+
+        // Lấy giá giảm thấp nhất sau khi áp dụng discount
+        const minDiscountedPrice = Math.min(...discountedPrices);
+        const minOriginalPrice = Math.min(...variantPrices);
+        
+        hasDiscount = minDiscountedPrice < minOriginalPrice;
+        discountPercent = voucher.discountPercent || 0;
+      } else {
+        // Voucher không active, không có discount
+        discountedPrices = [...variantPrices];
       }
     } else if (hasCampaign) {
-      discountedPrice =
-        product.discountPrice ?? product.finalPrice ?? product.priceAfterPromotion ?? originalPrice;
-      hasDiscount = discountedPrice < originalPrice && discountedPrice > 0;
+      // Backend đã tính sẵn, nhưng cần tính lại cho từng variant
+      // Nếu có variants, tính discount cho từng variant
+      if (product.variants && product.variants.length > 0) {
+        // Backend có thể đã tính sẵn, nhưng ta cần tính lại cho từng variant
+        const campaign = product.vouchers?.platformVouchers?.[0];
+        const voucher = campaign?.vouchers?.[0];
+        
+        if (voucher) {
+          discountedPrices = variantPrices.map((variantPrice) => {
+            if (voucher.type === 'PERCENT' && voucher.discountPercent) {
+              const discountAmount = (variantPrice * voucher.discountPercent) / 100;
+              const finalDiscount =
+                voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
+                  ? Math.min(discountAmount, voucher.maxDiscountValue)
+                  : discountAmount;
+              return Math.max(0, variantPrice - finalDiscount);
+            } else if (voucher.type === 'FIXED' && voucher.discountValue) {
+              return Math.max(0, variantPrice - voucher.discountValue);
+            }
+            return variantPrice;
+          });
+        } else {
+          discountedPrices = [...variantPrices];
+        }
 
-      if (hasDiscount && originalPrice > 0) {
-        discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
-      }
+        const minDiscountedPrice = Math.min(...discountedPrices);
+        const minOriginalPrice = Math.min(...variantPrices);
+        hasDiscount = minDiscountedPrice < minOriginalPrice && minDiscountedPrice > 0;
+        
+        if (hasDiscount && minOriginalPrice > 0) {
+          discountPercent = Math.round(((minOriginalPrice - minDiscountedPrice) / minOriginalPrice) * 100);
+        }
 
-      const campaign = product.vouchers?.platformVouchers?.[0];
-      if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
-        campaignType = campaign.campaignType;
+        // Xác định campaign type
+        if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
+          campaignType = campaign.campaignType;
+        }
+      } else {
+        // Không có variants, dùng giá từ backend
+        const backendPrice = product.discountPrice ?? product.finalPrice ?? product.priceAfterPromotion ?? variantPrices[0];
+        discountedPrices = [backendPrice];
+        const minOriginalPrice = variantPrices[0];
+        hasDiscount = backendPrice < minOriginalPrice && backendPrice > 0;
+        
+        if (hasDiscount && minOriginalPrice > 0) {
+          discountPercent = Math.round(((minOriginalPrice - backendPrice) / minOriginalPrice) * 100);
+        }
+
+        const campaign = product.vouchers?.platformVouchers?.[0];
+        if (campaign?.campaignType === 'FLASH_SALE' || campaign?.campaignType === 'MEGA_SALE') {
+          campaignType = campaign.campaignType;
+        }
       }
+    } else {
+      // Không có campaign, không có discount
+      discountedPrices = [...variantPrices];
     }
 
-    if (discountedPrice === 0 && originalPrice > 0) {
-      discountedPrice = originalPrice;
-      hasDiscount = false;
-    }
+    // Step 7: Lấy giá thấp nhất (cả original và discounted)
+    const originalPrice = Math.min(...variantPrices);
+    const discountedPrice = discountedPrices.length > 0 ? Math.min(...discountedPrices) : originalPrice;
 
-    if (discountPercent === 0 && originalPrice > 0 && discountedPrice > 0 && discountedPrice < originalPrice) {
-      discountPercent = Math.round(((originalPrice - discountedPrice) / originalPrice) * 100);
-    }
+    // Validation: Nếu discountedPrice = 0 nhưng originalPrice > 0, dùng originalPrice
+    const finalDiscountedPrice = discountedPrice === 0 && originalPrice > 0 ? originalPrice : discountedPrice;
+    const finalHasDiscount = finalDiscountedPrice < originalPrice && finalDiscountedPrice > 0;
 
-    let priceRange: { min: number; max: number } | null = null;
-    if (product.variants && product.variants.length > 0) {
-      const variantPrices = product.variants
-        .map((v) => v.price ?? v.variantPrice ?? 0)
-        .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v) && v > 0);
-      if (variantPrices.length > 0) {
-        priceRange = {
-          min: Math.min(...variantPrices),
-          max: Math.max(...variantPrices),
-        };
-      }
+    // Tính discountPercent nếu chưa có
+    let finalDiscountPercent = discountPercent;
+    if (finalDiscountPercent === 0 && originalPrice > 0 && finalDiscountedPrice > 0 && finalDiscountedPrice < originalPrice) {
+      finalDiscountPercent = Math.round(((originalPrice - finalDiscountedPrice) / originalPrice) * 100);
     }
 
     return {
       originalPrice,
-      discountedPrice,
-      hasDiscount,
-      discountPercent,
+      discountedPrice: finalDiscountedPrice,
+      hasDiscount: finalHasDiscount,
+      discountPercent: finalDiscountPercent,
       campaignType,
-      priceRange,
+      priceRange: null, // Luôn set null để chỉ hiển thị giá thấp nhất, không hiển thị range
     };
   };
 
@@ -351,7 +420,7 @@ const ProductListScreen = () => {
           hasDiscount,
           discountPercent,
           campaignType,
-          priceRange,
+          priceRange: null, // Luôn set null để chỉ hiển thị giá thấp nhất, không hiển thị range
           image: product.thumbnailUrl ?? product.images?.[0] ?? FALLBACK_IMAGE,
           rating: product.ratingAverage ?? 4.5,
         };
