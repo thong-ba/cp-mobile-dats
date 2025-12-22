@@ -2,15 +2,12 @@ import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useRef, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Snackbar } from 'react-native-paper';
-import GoogleLoginButton from '../../../components/CommonScreenComponents/GoogleLoginButton';
 import { RegisterForm } from '../../../components/CommonScreenComponents/RegisterComponents';
-import { useAuth } from '../../../context/AuthContext';
 import { registerCustomer } from '../../../services/authService';
 import { RegisterRequest } from '../../../types/auth';
 
 export default function RegisterScreen() {
   const navigation = useNavigation();
-  const { loginWithGoogle } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successVisible, setSuccessVisible] = useState(false);
@@ -88,36 +85,6 @@ export default function RegisterScreen() {
               errorMessage={errorMessage}
               onFieldChange={() => setErrorMessage(null)}
             />
-
-            <View style={styles.dividerRow}>
-              <View style={styles.divider} />
-              <Text style={styles.dividerText}>Hoặc tiếp tục với</Text>
-              <View style={styles.divider} />
-            </View>
-
-            <GoogleLoginButton
-              variant="register"
-              onSuccess={async (tokens) => {
-                try {
-                  await loginWithGoogle(tokens);
-                  setSuccessVisible(true);
-                  if (successTimerRef.current) {
-                    clearTimeout(successTimerRef.current);
-                  }
-                  successTimerRef.current = setTimeout(() => {
-                    setSuccessVisible(false);
-                    const tabNavigator = navigation.getParent();
-                    tabNavigator?.navigate('Home' as never);
-                  }, 2000);
-                } catch (error: any) {
-                  setErrorMessage(error?.message || 'Đăng ký Google thất bại');
-                }
-              }}
-              onError={(error) => {
-                setErrorMessage(error);
-              }}
-              disabled={isSubmitting}
-            />
             <View
               style={{
                 marginTop: 16,
@@ -170,23 +137,6 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#EFEFEF',
-  },
-  dividerRow: {
-    marginVertical: 6,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#EEE',
-  },
-  dividerText: {
-    color: '#999',
-    fontSize: 12,
-    fontWeight: '600',
   },
   errorText: {
     marginTop: 8,

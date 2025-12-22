@@ -1,11 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { loginCustomer } from '../services/authService';
 import { getCustomerById } from '../services/customerService';
-import {
-  extractUserInfoFromToken,
-  fetchCustomerProfile,
-  OAuthTokens,
-} from '../services/googleAuthService';
 import { DecodedToken, LoginRequest, LoginResponse } from '../types/auth';
 import { CustomerProfile } from '../types/customer';
 import { decodeJwt } from '../utils/jwt';
@@ -37,7 +32,6 @@ type AuthContextValue = {
   authState: AuthState;
   isAuthenticated: boolean;
   login: (payload: LoginRequest) => Promise<LoginResponse['data']>;
-  loginWithGoogle: (tokens: OAuthTokens) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -161,56 +155,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return response.data;
   };
 
-  const loginWithGoogle = async (tokens: OAuthTokens) => {
-    const { token, refreshToken, accountId, customerId } = tokens;
-
-    // Decode token
-    const decoded = decodeJwt(token);
-
-    // Try to fetch customer profile
-    let customerProfile: CustomerProfile | null = null;
-    if (customerId || decoded?.customerId) {
-      try {
-        customerProfile = await fetchCustomerProfile(token, customerId || decoded?.customerId);
-      } catch (error) {
-        console.warn('[AuthContext] Failed to fetch customer profile, using token fallback', error);
-      }
-    }
-
-    // Fallback: Extract user info from token if profile fetch failed
-    let user: LoginResponse['data']['user'] | null = null;
-    if (!customerProfile) {
-      const userInfo = extractUserInfoFromToken(token, accountId, customerId || decoded?.customerId);
-      if (userInfo) {
-        user = {
-          email: userInfo.email,
-          fullName: userInfo.fullName,
-          role: userInfo.role,
-        };
-      }
-    } else {
-      // Use profile data to create user object
-      user = {
-        email: customerProfile.email,
-        fullName: customerProfile.fullName,
-        role: 'CUSTOMER',
-      };
-    }
-
-    const newState: AuthState = {
-      accessToken: token,
-      refreshToken: refreshToken || null,
-      user,
-      decodedToken: decoded,
-      customerProfile,
-    };
-
-    setAuthState(newState);
-    await persistAuthState(newState);
-
-    console.log('[AuthContext] Google login success for user:', user?.email);
-  };
-
   const logout = async () => {
     try {
       setAuthState(initialState);
@@ -228,7 +172,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       authState,
       isAuthenticated: Boolean(authState.accessToken && authState.decodedToken) && !isHydrating,
       login,
-      loginWithGoogle,
       logout,
     }),
     [authState, isHydrating],
