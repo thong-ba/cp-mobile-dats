@@ -86,9 +86,14 @@ const ProductDetailScreen: React.FC = () => {
   const addToCartButtonRef = useRef<View>(null);
   const cartIconRef = useRef<View>(null);
 
+  /**
+   * Fetch both product and vouchers in parallel
+   * Based on the detailed documentation provided
+   */
   const loadProduct = useCallback(
     async (isPullRefresh = false) => {
       try {
+        // 1. Set loading state
         if (isPullRefresh) {
           setIsRefreshing(true);
         } else {
@@ -96,60 +101,94 @@ const ProductDetailScreen: React.FC = () => {
         }
         setErrorMessage(null);
 
-        // Fetch both APIs in parallel
+        // 2. Reset states when productId changes
+        setProduct(null);
+        setSelectedVariant(null);
+        setHoveredVariantImage(null);
+        setPlatformCampaigns([]);
+
+        // 3. Fetch both APIs in parallel
+        // Voucher API có thể fail, không block product display
         const [detailData, voucherData] = await Promise.all([
           getProductById(productId),
           getProductVouchers(productId).catch((e) => {
-            console.warn('[ProductDetailScreen] Voucher load error', e);
-            return null; // Voucher error không block product display
+            // Voucher API có thể fail (404, 500, etc.), không block product display
+            console.warn('[ProductDetailScreen] Voucher load error (non-blocking):', e);
+            return null;
           }),
         ]);
 
-        setProduct(detailData);
-        // Support both 'platform' and 'platformVouchers' keys for backward compatibility
-        const vouchersData = voucherData?.vouchers;
-        const platforms =
-          (vouchersData && 'platformVouchers' in vouchersData && Array.isArray(vouchersData.platformVouchers)
-            ? (vouchersData.platformVouchers as PlatformCampaign[])
-            : null) ??
-          (vouchersData && 'platform' in vouchersData && Array.isArray(vouchersData.platform)
-            ? vouchersData.platform
-            : null) ??
-          [];
-        setPlatformCampaigns(platforms);
-        console.log('[ProductDetailScreen] Loaded campaigns:', {
-          count: platforms.length,
-          campaigns: platforms.map((c) => ({
-            campaignId: c.campaignId,
-            type: c.campaignType,
-            name: c.name,
-            status: c.status,
-            badgeLabel: c.badgeLabel,
-            vouchers: c.vouchers?.map((v) => ({
-              type: v.type,
-              discountPercent: v.discountPercent,
-              discountValue: v.discountValue,
-              maxDiscountValue: v.maxDiscountValue,
-              status: v.status,
-            })) || [],
-          })),
-        });
+        // 4. Set product data
+        if (detailData) {
+          setProduct(detailData);
+        } else {
+          setErrorMessage('Sản phẩm không tồn tại');
+          return;
+        }
 
-        // Reset variant selection when product changes
+        // 5. Process voucher data
+        // Support both 'platform' and 'platformVouchers' keys for backward compatibility
+        if (voucherData) {
+          const vouchersData = voucherData.vouchers;
+          const platforms =
+            (vouchersData && 'platformVouchers' in vouchersData && Array.isArray(vouchersData.platformVouchers)
+              ? (vouchersData.platformVouchers as PlatformCampaign[])
+              : null) ??
+            (vouchersData && 'platform' in vouchersData && Array.isArray(vouchersData.platform)
+              ? (vouchersData.platform as PlatformCampaign[])
+              : null) ??
+            [];
+          setPlatformCampaigns(platforms);
+
+          console.log('[ProductDetailScreen] Loaded campaigns:', {
+            count: platforms.length,
+            campaigns: platforms.map((c) => ({
+              campaignId: c.campaignId,
+              type: c.campaignType,
+              name: c.name,
+              status: c.status,
+              badgeLabel: c.badgeLabel,
+              vouchers: c.vouchers?.map((v) => ({
+                type: v.type,
+                discountPercent: v.discountPercent,
+                discountValue: v.discountValue,
+                maxDiscountValue: v.maxDiscountValue,
+                status: v.status,
+              })) || [],
+            })),
+          });
+        } else {
+          // No voucher data - set empty array
+          setPlatformCampaigns([]);
+        }
+
+        // 6. Reset variant selection when product changes
         setSelectedVariant(null);
         setHoveredVariantImage(null);
       } catch (error: any) {
         console.error('[ProductDetailScreen] loadProduct failed', error);
-        const message =
-          error?.response?.status === 404
-            ? 'Sản phẩm không tồn tại'
-            : error?.response?.status === 401
-            ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
-            : error?.message?.includes('Network')
-            ? 'Không có kết nối mạng. Vui lòng thử lại.'
-            : 'Không thể tải thông tin sản phẩm. Vui lòng thử lại.';
+        
+        // Error handling based on status code
+        let message = 'Không thể tải thông tin sản phẩm. Vui lòng thử lại.';
+        
+        if (error?.response) {
+          const status = error.response.status;
+          if (status === 404) {
+            message = 'Sản phẩm không tồn tại';
+          } else if (status === 401) {
+            message = 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.';
+          } else if (status === 403) {
+            message = 'Bạn không có quyền truy cập sản phẩm này';
+          } else if (status === 500) {
+            message = 'Lỗi server. Vui lòng thử lại sau.';
+          }
+        } else if (error?.message?.includes('Network') || error?.code === 'NETWORK_ERROR') {
+          message = 'Không có kết nối mạng. Vui lòng kiểm tra internet và thử lại.';
+        }
+        
         setErrorMessage(message);
       } finally {
+        // Always reset loading state
         if (isPullRefresh) {
           setIsRefreshing(false);
         } else {
@@ -275,15 +314,20 @@ const ProductDetailScreen: React.FC = () => {
     return product.images?.[selectedImageIndex] || product.images?.[0] || '';
   }, [product, hoveredVariantImage, selectedVariant, selectedImageIndex]);
 
-  // Handle variant selection
+  /**
+   * Handle variant selection
+   * Logic:
+   * - Click variant đã chọn → Deselect (quay về price range)
+   * - Click variant khác → Select (hiển thị variant price và image)
+   */
   const handleVariantSelect = useCallback(
     (variant: ProductVariant) => {
       if (selectedVariant?.variantId === variant.variantId) {
-        // Deselect - quay về trạng thái ban đầu
+        // Deselect - click lại variant đã chọn → quay về trạng thái ban đầu
         setSelectedVariant(null);
         setHoveredVariantImage(null);
       } else {
-        // Select variant mới
+        // Select variant mới → hiển thị variant price và image
         setSelectedVariant(variant);
         setHoveredVariantImage(variant.variantUrl || null);
       }
@@ -291,17 +335,23 @@ const ProductDetailScreen: React.FC = () => {
     [selectedVariant],
   );
 
-  // Handle variant hover (for image preview)
+  /**
+   * Handle variant hover (for image preview)
+   * Logic:
+   * - Hover vào variant → Hiển thị hình variant (temporary)
+   * - Hover out + chưa chọn → Quay về hình mặc định
+   * - Hover out + đã chọn → Giữ hình variant đã chọn
+   */
   const handleVariantHover = useCallback(
     (variant: ProductVariant | null) => {
       if (variant && variant.variantUrl) {
         // Hover vào variant → hiển thị tạm thời hình ảnh variant
         setHoveredVariantImage(variant.variantUrl);
       } else if (!selectedVariant) {
-        // Không hover và chưa chọn variant → clear override
+        // Hover out và chưa chọn variant → clear override, quay về hình mặc định
         setHoveredVariantImage(null);
       } else if (selectedVariant) {
-        // Hover kết thúc nhưng đã chọn variant → hiển thị variant đã chọn
+        // Hover out nhưng đã chọn variant → hiển thị variant đã chọn
         setHoveredVariantImage(selectedVariant.variantUrl || null);
       }
     },
@@ -477,6 +527,7 @@ const ProductDetailScreen: React.FC = () => {
     }
   };
 
+  // Loading state - show skeleton/loader
   if (isLoading && !product) {
     return (
       <View style={styles.loaderContainer}>
@@ -486,6 +537,7 @@ const ProductDetailScreen: React.FC = () => {
     );
   }
 
+  // Error state - show error message with retry button
   if (errorMessage && !product) {
     return (
       <View style={styles.errorContainer}>
@@ -494,10 +546,17 @@ const ProductDetailScreen: React.FC = () => {
         <TouchableOpacity style={styles.retryButton} onPress={() => loadProduct()}>
           <Text style={styles.retryText}>Thử lại</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.backButtonError}
+          onPress={() => navigation.goBack()}
+        >
+          <Text style={styles.backButtonErrorText}>Quay lại</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
+  // No product data - return null (should not happen, but safety check)
   if (!product) {
     return null;
   }
@@ -1738,6 +1797,17 @@ const styles = StyleSheet.create({
   retryText: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  backButtonError: {
+    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+  },
+  backButtonErrorText: {
+    color: '#666',
+    fontWeight: '600',
   },
   scrollView: {
     flex: 1,

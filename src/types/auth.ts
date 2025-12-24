@@ -15,21 +15,26 @@ export type LoginResponse = {
   message: string;
   data: {
     accessToken: string;
-    refreshToken: string;
+    refreshToken?: string;
     tokenType: string;
     user: {
       email: string;
+      accountId?: string;
+      customerId?: string;
       fullName: string;
       role: string;
     };
-    staff: unknown;
+    staff?: unknown;
   };
 };
 
 export type RegisterResponse = {
   status: number;
   message: string;
-  data?: unknown;
+  data?: {
+    email: string;
+    phone: string;
+  };
 };
 
 export type DecodedToken = {

@@ -1,57 +1,102 @@
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useRef, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Snackbar } from 'react-native-paper';
 import { RegisterForm } from '../../../components/CommonScreenComponents/RegisterComponents';
 import { registerCustomer } from '../../../services/authService';
+import { CustomerAuthService } from '../../../services/customerAuthService';
 import { RegisterRequest } from '../../../types/auth';
 
+const AsyncStorage: any =
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('@react-native-async-storage/async-storage').default;
+
+/**
+ * RegisterScreen Component
+ * 
+ * Handles customer registration with:
+ * - Client-side validation
+ * - API error handling (409 conflict, 400 validation)
+ * - Success message and redirect to login
+ * - Pre-fill email in login screen
+ */
 export default function RegisterScreen() {
   const navigation = useNavigation();
+  const route = useRoute();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    email?: string;
+    phone?: string;
+  }>({});
   const [successVisible, setSuccessVisible] = useState(false);
   const successTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleSubmit = useCallback(
     async (payload: RegisterRequest) => {
       setIsSubmitting(true);
-      setErrorMessage(null); // Clear error message when submitting
-      try {
-        await registerCustomer(payload);
-        setSuccessVisible(true);
-        if (successTimerRef.current) {
-          clearTimeout(successTimerRef.current);
-        }
-        successTimerRef.current = setTimeout(() => {
-          setSuccessVisible(false);
-          navigation.navigate('Login' as never);
-        }, 2000);
-      } catch (error: unknown) {
-        let message = 'Không thể đăng ký. Vui lòng thử lại.';
-        if (typeof error === 'object' && error !== null) {
-          const errorResponse = error as { response?: { data?: { message?: string; status?: number } } };
-          const axiosMessage = errorResponse?.response?.data?.message;
-          const status = errorResponse?.response?.data?.status;
+      setErrorMessage(null);
+      setFieldErrors({});
 
-          if (axiosMessage) {
-            // Xử lý các lỗi cụ thể từ API
-            if (status === 409) {
-              if (axiosMessage.toLowerCase().includes('email')) {
-                message = 'Email này đã được sử dụng. Vui lòng chọn email khác.';
-              } else if (axiosMessage.toLowerCase().includes('phone') || axiosMessage.toLowerCase().includes('số điện thoại')) {
-                message = 'Số điện thoại này đã được sử dụng. Vui lòng chọn số điện thoại khác.';
-              } else {
-                message = axiosMessage;
-              }
-            } else {
-              message = axiosMessage;
-            }
-          } else {
-            const genericMessage = (error as { message?: string }).message;
-            if (genericMessage) message = genericMessage;
-          }
+      try {
+        // 1. Client-side validation
+        const validationErrors = CustomerAuthService.validateRegisterData(payload);
+        if (validationErrors.length > 0) {
+          setErrorMessage(validationErrors[0]);
+          setIsSubmitting(false);
+          return;
         }
+
+        // 2. API call
+        const response = await registerCustomer(payload);
+
+        // 3. Success handling
+        if (response.status === 201) {
+          setSuccessVisible(true);
+          
+          // Clear timer if exists
+          if (successTimerRef.current) {
+            clearTimeout(successTimerRef.current);
+          }
+
+          // Wait 3 seconds then navigate to login with email pre-filled
+          successTimerRef.current = setTimeout(() => {
+            setSuccessVisible(false);
+            // @ts-ignore - navigation params type
+            navigation.navigate('Login', {
+              email: (response.data as any)?.email || payload.email,
+              message: 'Đăng ký thành công. Vui lòng đăng nhập.',
+            });
+          }, 3000);
+        }
+      } catch (error: unknown) {
+        // 4. Error handling
+        let message = 'Không thể đăng ký. Vui lòng thử lại.';
+        const errorObj = error as { status?: number; message?: string; response?: any };
+
+        if (errorObj.status === 409) {
+          // Conflict: Email or phone already exists
+          const errorMessage = (errorObj.message || '').toLowerCase();
+          
+          if (errorMessage.includes('email') && 
+              (errorMessage.includes('already') || errorMessage.includes('used') || errorMessage.includes('exists'))) {
+            setFieldErrors({ email: 'Email này đã được sử dụng' });
+            message = 'Email này đã được sử dụng. Vui lòng sử dụng email khác hoặc đăng nhập.';
+          } else if ((errorMessage.includes('phone') || errorMessage.includes('số điện thoại')) && 
+                     (errorMessage.includes('already') || errorMessage.includes('used') || errorMessage.includes('exists'))) {
+            setFieldErrors({ phone: 'Số điện thoại này đã được sử dụng' });
+            message = 'Số điện thoại này đã được sử dụng. Vui lòng sử dụng số điện thoại khác.';
+          } else {
+            message = 'Thông tin đăng ký đã tồn tại trong hệ thống. Vui lòng kiểm tra lại email và số điện thoại.';
+          }
+        } else if (errorObj.status === 400) {
+          // Bad Request: Validation error
+          message = CustomerAuthService.formatApiError(errorObj);
+        } else {
+          // Other errors (network, 500, etc.)
+          message = CustomerAuthService.formatApiError(errorObj);
+        }
+
         setErrorMessage(message);
       } finally {
         setIsSubmitting(false);
@@ -83,7 +128,10 @@ export default function RegisterScreen() {
               onSubmit={handleSubmit}
               isSubmitting={isSubmitting}
               errorMessage={errorMessage}
-              onFieldChange={() => setErrorMessage(null)}
+              onFieldChange={() => {
+                setErrorMessage(null);
+                setFieldErrors({});
+              }}
             />
             <View
               style={{
@@ -102,8 +150,13 @@ export default function RegisterScreen() {
           </View>
         </ScrollView>
       </SafeAreaView>
-      <Snackbar visible={successVisible} onDismiss={() => setSuccessVisible(false)} duration={2000}>
-        Đăng ký thành công. Vui lòng đăng nhập.
+      <Snackbar
+        visible={successVisible}
+        onDismiss={() => setSuccessVisible(false)}
+        duration={3000}
+        style={styles.successSnackbar}
+      >
+        Đăng ký thành công! Hãy kiểm tra email xác nhận đăng ký tài khoản
       </Snackbar>
     </>
   );
@@ -138,11 +191,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#EFEFEF',
   },
-  errorText: {
-    marginTop: 8,
-    color: '#B3261E',
-    fontWeight: '600',
+  successSnackbar: {
+    backgroundColor: '#4CAF50',
   },
 });
-
-

@@ -1,6 +1,6 @@
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -10,6 +10,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Snackbar } from 'react-native-paper';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import httpClient from '../../../api/httpClient';
 import {
   BannerCarousel,
@@ -20,14 +22,23 @@ import {
   ProductGrid,
   RatingSection,
 } from '../../../components/CommonScreenComponents/HomeScreenComponents';
+import { useAuth } from '../../../context/AuthContext';
 import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
 import { ProductStatus } from '../../../types/product';
 
+// Constants
 const FALLBACK_IMAGE = 'https://placehold.co/600x400?text=Audio+Product';
 const FALLBACK_CATEGORY_IMAGE = 'https://placehold.co/80?text=CAT';
 const PAGE_SIZE = 20;
 const DEFAULT_STATUS: ProductStatus = 'ACTIVE';
+const WELCOME_MESSAGE_STORAGE_KEY = 'welcomeMessage';
 
+// AsyncStorage import
+const AsyncStorage: any =
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('@react-native-async-storage/async-storage').default;
+
+// Types
 type CategoryItem = {
   id: string;
   name: string;
@@ -114,10 +125,36 @@ type ProductCard = {
   rating?: number;
 };
 
+type WelcomeMessageData = {
+  userName: string;
+  showWelcome: boolean;
+};
+
 type HomeScreenNavigationProp = NativeStackNavigationProp<ProductStackParamList, 'Home'>;
 
+/**
+ * HomeScreen Component
+ * 
+ * Main home screen displaying:
+ * - Category navigation
+ * - Product banners
+ * - Flash sale section
+ * - Popular products
+ * - Product grid
+ * - Rating section
+ * 
+ * Features:
+ * - Welcome message handler (from AsyncStorage)
+ * - Pull-to-refresh
+ * - Search and filter
+ * - Pagination support
+ * - Error handling
+ */
 const HomeScreen = () => {
   const navigation = useNavigation<HomeScreenNavigationProp>();
+  const { authState, isAuthenticated } = useAuth();
+
+  // State Management
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [searchInput, setSearchInput] = useState('');
   const [appliedKeyword, setAppliedKeyword] = useState('');
@@ -132,6 +169,87 @@ const HomeScreen = () => {
   const [totalPages, setTotalPages] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
+  // Welcome Message State
+  const [welcomeSnackbarVisible, setWelcomeSnackbarVisible] = useState(false);
+  const [welcomeMessage, setWelcomeMessage] = useState<string>('');
+
+  // Refs
+  const welcomeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * ============================================
+   * SECTION 1: Welcome Message Handler
+   * ============================================
+   * 
+   * Handles welcome message display after login
+   * Reads from AsyncStorage and shows Snackbar notification
+   */
+  useEffect(() => {
+    const checkWelcomeMessage = async () => {
+      try {
+        const welcomeDataStr = await AsyncStorage.getItem(WELCOME_MESSAGE_STORAGE_KEY);
+        
+        if (welcomeDataStr) {
+          try {
+            const welcomeData: WelcomeMessageData = JSON.parse(welcomeDataStr);
+            
+            if (welcomeData.showWelcome && welcomeData.userName) {
+              // Set welcome message
+              setWelcomeMessage(`Chào mừng ${welcomeData.userName} trở lại!`);
+              setWelcomeSnackbarVisible(true);
+              
+              // Clear from storage after showing
+              await AsyncStorage.removeItem(WELCOME_MESSAGE_STORAGE_KEY);
+              
+              // Auto hide after 3 seconds
+              if (welcomeTimerRef.current) {
+                clearTimeout(welcomeTimerRef.current);
+              }
+              welcomeTimerRef.current = setTimeout(() => {
+                setWelcomeSnackbarVisible(false);
+              }, 3000);
+            } else {
+              // Invalid data, remove it
+              await AsyncStorage.removeItem(WELCOME_MESSAGE_STORAGE_KEY);
+            }
+          } catch (parseError) {
+            console.error('[HomeScreen] Error parsing welcome message:', parseError);
+            // Invalid JSON, remove it
+            await AsyncStorage.removeItem(WELCOME_MESSAGE_STORAGE_KEY);
+          }
+        }
+      } catch (error) {
+        console.error('[HomeScreen] Error reading welcome message:', error);
+        // On error, try to clean up
+        try {
+          await AsyncStorage.removeItem(WELCOME_MESSAGE_STORAGE_KEY);
+        } catch (cleanupError) {
+          console.error('[HomeScreen] Error cleaning up welcome message:', cleanupError);
+        }
+      }
+    };
+
+    // Only check welcome message if user is authenticated
+    if (isAuthenticated) {
+      checkWelcomeMessage();
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (welcomeTimerRef.current) {
+        clearTimeout(welcomeTimerRef.current);
+      }
+    };
+  }, [isAuthenticated]);
+
+  /**
+   * ============================================
+   * SECTION 2: Category Loading
+   * ============================================
+   * 
+   * Loads category tree from API and flattens it
+   * Includes both parent and child categories
+   */
   const loadCategories = useCallback(async () => {
     try {
       const res = await httpClient.get<{
@@ -175,13 +293,26 @@ const HomeScreen = () => {
       const mapped = flattenCategories(res.data?.data ?? []);
       setCategories(mapped);
     } catch (error: any) {
-      console.error('fetchCategories error', error);
+      console.error('[HomeScreen] fetchCategories error', error);
       // Set empty categories on error to prevent UI issues
       setCategories([]);
     }
   }, []);
 
-  const calculatePricing = (product: ProductViewItem) => {
+  /**
+   * ============================================
+   * SECTION 3: Price Calculation Logic
+   * ============================================
+   * 
+   * Complex pricing logic that handles:
+   * - Variant pricing
+   * - Campaign discounts (FLASH_SALE, MEGA_SALE)
+   * - Voucher calculations (PERCENT, FIXED)
+   * - Price range for variants
+   * 
+   * Returns single lowest price (not range) for display
+   */
+  const calculatePricing = useCallback((product: ProductViewItem) => {
     // Step 1: Lấy tất cả giá từ variants (nếu có)
     const variantPrices: number[] = [];
     if (product.variants && product.variants.length > 0) {
@@ -369,7 +500,7 @@ const HomeScreen = () => {
       finalDiscountPercent = Math.round(((originalPrice - finalDiscountedPrice) / originalPrice) * 100);
     }
 
-    // Build price range if variants exist
+    // Build price range if variants exist (but we'll set it to null for display)
     let priceRange: { min: number; max: number } | null = null;
     if (product.variants && product.variants.length > 0) {
       if (variantPrices.length > 0) {
@@ -388,8 +519,16 @@ const HomeScreen = () => {
       campaignType,
       priceRange,
     };
-  };
+  }, []);
 
+  /**
+   * ============================================
+   * SECTION 4: Product Loading
+   * ============================================
+   * 
+   * Loads products with pagination, search, and category filters
+   * Supports pull-to-refresh and load more
+   */
   const loadProducts = useCallback(
     async (isPullRefresh = false, pageNum = 0, append = false) => {
       try {
@@ -442,8 +581,9 @@ const HomeScreen = () => {
           setHasMore(apiProducts.length === PAGE_SIZE);
         }
       } catch (error) {
-        setErrorMessage('Không thể tải danh sách sản phẩm. Vui lòng thử lại.');
-        console.error('fetchProducts error', error);
+        const errorMsg = 'Không thể tải danh sách sản phẩm. Vui lòng thử lại.';
+        setErrorMessage(errorMsg);
+        console.error('[HomeScreen] fetchProducts error', error);
       } finally {
         if (isPullRefresh) {
           setIsRefreshing(false);
@@ -457,6 +597,13 @@ const HomeScreen = () => {
     [appliedKeyword, selectedCategoryId],
   );
 
+  /**
+   * ============================================
+   * SECTION 5: Effects & Lifecycle
+   * ============================================
+   */
+  
+  // Initial load: categories and products
   useEffect(() => {
     loadCategories();
     loadProducts();
@@ -470,6 +617,12 @@ const HomeScreen = () => {
     loadProducts(false, 0, false);
   }, [appliedKeyword, selectedCategoryId, loadProducts]);
 
+  /**
+   * ============================================
+   * SECTION 6: Event Handlers
+   * ============================================
+   */
+  
   const handleLoadMore = useCallback(() => {
     if (!isLoadingMore && hasMore && !isRefreshing) {
       const nextPage = currentPage + 1;
@@ -477,6 +630,37 @@ const HomeScreen = () => {
     }
   }, [isLoadingMore, hasMore, isRefreshing, currentPage, loadProducts]);
 
+  const handleSubmitSearch = useCallback(() => {
+    setAppliedKeyword(searchInput.trim());
+  }, [searchInput]);
+
+  const handleSelectCategory = useCallback(
+    (categoryName: string | null) => {
+      setSelectedCategoryName(categoryName);
+      if (!categoryName) {
+        setSelectedCategoryId(null);
+        return;
+      }
+      const found = categories.find(
+        (cat) => cat.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+      );
+      setSelectedCategoryId(found?.id ?? null);
+    },
+    [categories],
+  );
+
+  const handleRetry = useCallback(() => {
+    setErrorMessage(null);
+    loadProducts();
+  }, [loadProducts]);
+
+  /**
+   * ============================================
+   * SECTION 7: Memoized Computed Values
+   * ============================================
+   */
+  
+  // Banner images from products
   const bannerImages = useMemo(() => {
     const apiImages = products
       .flatMap((product) => product.images?.[0] ?? product.thumbnailUrl)
@@ -484,6 +668,7 @@ const HomeScreen = () => {
     return apiImages.length > 0 ? apiImages : [FALLBACK_IMAGE];
   }, [products]);
 
+  // Product cards with calculated pricing
   const productCards = useMemo(
     () =>
       products.map((product) => {
@@ -509,11 +694,83 @@ const HomeScreen = () => {
           rating: product.ratingAverage ?? 4.5,
         };
       }),
-    [products],
+    [products, calculatePricing],
   );
 
-  const flashSaleProducts = useMemo(() => productCards.slice(0, 8), [productCards]);
+  // Flash sale products - filter by campaignType === 'FLASH_SALE'
+  const flashSaleProducts = useMemo(() => {
+    // Filter products that have FLASH_SALE campaign
+    const flashSaleItems = products
+      .map((product) => {
+        const {
+          discountedPrice,
+          originalPrice,
+          hasDiscount,
+          discountPercent,
+          campaignType,
+          priceRange,
+        } = calculatePricing(product);
+
+        // Only include products with FLASH_SALE campaign
+        if (campaignType !== 'FLASH_SALE') {
+          return null;
+        }
+
+        return {
+          id: product.productId,
+          name: product.name,
+          price: discountedPrice,
+          originalPrice,
+          hasDiscount,
+          discountPercent,
+          campaignType,
+          priceRange: null, // Always set null to show single price
+          image: product.thumbnailUrl ?? product.images?.[0] ?? FALLBACK_IMAGE,
+          rating: product.ratingAverage ?? 4.5,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .slice(0, 8); // Limit to 8 products
+
+    return flashSaleItems;
+  }, [products, calculatePricing]);
+
+  // Calculate flash sale countdown time from slot time
+  const flashSaleEndTime = useMemo(() => {
+    if (flashSaleProducts.length === 0) {
+      return null;
+    }
+
+    // Find the earliest slot close time from all flash sale products
+    const slotTimes = flashSaleProducts
+      .map((product) => {
+        // Find the product in original products array to get slot time
+        const originalProduct = products.find((p) => p.productId === product.id);
+        if (!originalProduct) return null;
+
+        const voucher = originalProduct.vouchers?.platformVouchers?.[0]?.vouchers?.[0];
+        if (!voucher?.slotCloseTime) return null;
+
+        return new Date(voucher.slotCloseTime).getTime();
+      })
+      .filter((time): time is number => time !== null);
+
+    if (slotTimes.length === 0) {
+      return null;
+    }
+
+    // Return the earliest (minimum) slot close time
+    const earliestTime = Math.min(...slotTimes);
+    const now = Date.now();
+    const remaining = Math.max(0, earliestTime - now);
+
+    return remaining;
+  }, [flashSaleProducts, products]);
+
+  // Popular products (first 10)
   const popularProducts = useMemo(() => productCards.slice(0, 10), [productCards]);
+
+  // Rating items (first 10)
   const ratingItems = useMemo(
     () =>
       productCards.slice(0, 10).map((item, index) => ({
@@ -525,162 +782,223 @@ const HomeScreen = () => {
     [productCards],
   );
 
-  const handleSubmitSearch = useCallback(() => {
-    setAppliedKeyword(searchInput.trim());
-  }, [searchInput]);
-
-  const handleSelectCategory = useCallback(
-    (categoryName: string | null) => {
-      setSelectedCategoryName(categoryName);
-      if (!categoryName) {
-        setSelectedCategoryId(null);
-        return;
-      }
-      const found = categories.find(
-        (cat) => cat.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
-      );
-      setSelectedCategoryId(found?.id ?? null);
-    },
-    [categories],
-  );
-
+  /**
+   * ============================================
+   * SECTION 8: Render Helpers
+   * ============================================
+   */
+  
   const renderErrorState = () => (
     <View style={styles.errorContainer}>
       <Text style={styles.errorText}>{errorMessage}</Text>
-      <TouchableOpacity style={styles.retryButton} onPress={() => loadProducts()}>
+      <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
         <Text style={styles.retryText}>Thử lại</Text>
       </TouchableOpacity>
     </View>
   );
 
-  return (
-    <View style={styles.container}>
-      <HomeHeader
-        keyword={searchInput}
-        onKeywordChange={setSearchInput}
-        onSubmitSearch={handleSubmitSearch}
-        isSearching={isLoading && products.length === 0}
-      />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={() => loadProducts(true)} />
-        }
-      >
-        <CategorySection
-          categories={categories}
-          selectedCategoryName={selectedCategoryName}
-          onSelectCategory={handleSelectCategory}
-        />
-        {isLoading && products.length === 0 ? (
-          <View style={styles.loaderContainer}>
-            <ActivityIndicator size="large" color="#FF6A00" />
-            <Text style={styles.loaderText}>Đang tải sản phẩm...</Text>
-          </View>
-        ) : errorMessage ? (
-          renderErrorState()
-        ) : productCards.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyTitle}>Chưa có sản phẩm nào</Text>
-            <Text style={styles.emptySubtitle}>
-              Hãy thử đổi từ khóa tìm kiếm hoặc chọn danh mục khác.
-            </Text>
-          </View>
-        ) : (
-          <>
-            <BannerCarousel banners={bannerImages} />
-            <FlashSaleSection
-              products={flashSaleProducts}
-              onPressItem={(product) => {
-                // @ts-ignore - navigate to ProductDetail in ProductStack
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-            />
-            <PopularSection
-              products={popularProducts}
-              onPressItem={(product) => {
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-              onPressViewAll={() => {
-                navigation.navigate('ProductList');
-              }}
-            />
-            <ProductGrid
-              products={productCards}
-              onPressItem={(product) => {
-                navigation.navigate('ProductDetail', { productId: product.id });
-              }}
-              onPressViewAll={() => {
-                navigation.navigate('ProductList');
-              }}
-            />
-            <RatingSection items={ratingItems} />
-            
-            {/* Load More Section */}
-            {hasMore && (
-              <View style={styles.loadMoreContainer}>
-                <TouchableOpacity
-                  style={styles.loadMoreButton}
-                  onPress={() => {
-                    navigation.navigate('ProductList');
-                  }}
-                >
-                  <Text style={styles.loadMoreText}>Xem thêm sản phẩm</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </>
-        )}
-      </ScrollView>
+  const renderLoadingState = () => (
+    <View style={styles.loaderContainer}>
+      <ActivityIndicator size="large" color="#FF6A00" />
+      <Text style={styles.loaderText}>Đang tải sản phẩm...</Text>
     </View>
+  );
+
+  const renderEmptyState = () => (
+    <View style={styles.emptyContainer}>
+      <Text style={styles.emptyTitle}>Chưa có sản phẩm nào</Text>
+      <Text style={styles.emptySubtitle}>
+        Hãy thử đổi từ khóa tìm kiếm hoặc chọn danh mục khác.
+      </Text>
+    </View>
+  );
+
+  const renderContent = () => {
+    if (isLoading && products.length === 0) {
+      return renderLoadingState();
+    }
+
+    if (errorMessage) {
+      return renderErrorState();
+    }
+
+    if (productCards.length === 0) {
+      return renderEmptyState();
+    }
+
+    return (
+      <>
+        <BannerCarousel banners={bannerImages} />
+        {flashSaleProducts.length > 0 && (
+          <FlashSaleSection
+            products={flashSaleProducts}
+            endsInMs={flashSaleEndTime ?? undefined}
+            onPressItem={(product) => {
+              navigation.navigate('ProductDetail', { productId: product.id });
+            }}
+          />
+        )}
+        <PopularSection
+          products={popularProducts}
+          onPressItem={(product) => {
+            navigation.navigate('ProductDetail', { productId: product.id });
+          }}
+          onPressViewAll={() => {
+            navigation.navigate('ProductList');
+          }}
+        />
+        <ProductGrid
+          products={productCards}
+          onPressItem={(product) => {
+            navigation.navigate('ProductDetail', { productId: product.id });
+          }}
+          onPressViewAll={() => {
+            navigation.navigate('ProductList');
+          }}
+        />
+        <RatingSection items={ratingItems} />
+        
+        {/* Load More Section */}
+        {hasMore && (
+          <View style={styles.loadMoreContainer}>
+            <TouchableOpacity
+              style={styles.loadMoreButton}
+              onPress={() => {
+                navigation.navigate('ProductList');
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.loadMoreText}>Xem thêm sản phẩm</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </>
+    );
+  };
+
+  /**
+   * ============================================
+   * SECTION 9: Main Render
+   * ============================================
+   */
+  
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <View style={styles.container}>
+        <HomeHeader
+          keyword={searchInput}
+          onKeywordChange={setSearchInput}
+          onSubmitSearch={handleSubmitSearch}
+          isSearching={isLoading && products.length === 0}
+        />
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => loadProducts(true)}
+              colors={['#FF6A00']}
+              tintColor="#FF6A00"
+            />
+          }
+        >
+          <CategorySection
+            categories={categories}
+            selectedCategoryName={selectedCategoryName}
+            onSelectCategory={handleSelectCategory}
+          />
+          {renderContent()}
+        </ScrollView>
+
+        {/* Welcome Message Snackbar */}
+        <Snackbar
+          visible={welcomeSnackbarVisible}
+          onDismiss={() => setWelcomeSnackbarVisible(false)}
+          duration={3000}
+          style={styles.welcomeSnackbar}
+          action={{
+            label: 'Đóng',
+            onPress: () => setWelcomeSnackbarVisible(false),
+          }}
+        >
+          {welcomeMessage}
+        </Snackbar>
+      </View>
+    </SafeAreaView>
   );
 };
 
 export default HomeScreen;
 
+/**
+ * ============================================
+ * SECTION 10: Styles
+ * ============================================
+ */
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#F7F7F7',
+  },
   container: {
     flex: 1,
     backgroundColor: '#F7F7F7',
   },
+  scrollContent: {
+    paddingBottom: 24,
+  },
   loaderContainer: {
-    paddingVertical: 32,
+    paddingVertical: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
   loaderText: {
-    marginTop: 12,
-    color: '#555',
+    marginTop: 16,
+    color: '#666',
+    fontSize: 14,
+    fontWeight: '500',
   },
   errorContainer: {
     marginHorizontal: 16,
     marginTop: 24,
-    padding: 16,
+    padding: 20,
     borderRadius: 12,
     backgroundColor: '#FFF4F2',
     borderWidth: 1,
     borderColor: '#FFD4CC',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   errorText: {
     color: '#B3261E',
     textAlign: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
     fontWeight: '600',
+    fontSize: 15,
   },
   retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
     borderRadius: 8,
     backgroundColor: '#FF6A00',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   retryText: {
     color: '#FFFFFF',
     fontWeight: '700',
+    fontSize: 15,
   },
   emptyContainer: {
-    paddingVertical: 40,
+    paddingVertical: 48,
     alignItems: 'center',
     paddingHorizontal: 32,
   },
@@ -692,7 +1010,9 @@ const styles = StyleSheet.create({
   },
   emptySubtitle: {
     textAlign: 'center',
-    color: '#555',
+    color: '#666',
+    fontSize: 14,
+    lineHeight: 20,
   },
   loadMoreContainer: {
     paddingVertical: 24,
@@ -702,16 +1022,25 @@ const styles = StyleSheet.create({
   },
   loadMoreButton: {
     paddingHorizontal: 32,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderRadius: 8,
     backgroundColor: '#FF6A00',
     minWidth: 200,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   loadMoreText: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  welcomeSnackbar: {
+    backgroundColor: '#4CAF50',
+    marginBottom: 16,
   },
 });

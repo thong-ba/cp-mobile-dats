@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { loginCustomer } from '../services/authService';
+import { CustomerAuthService } from '../services/customerAuthService';
 import { getCustomerById } from '../services/customerService';
 import { DecodedToken, LoginRequest, LoginResponse } from '../types/auth';
 import { CustomerProfile } from '../types/customer';
@@ -24,8 +25,11 @@ const initialState: AuthState = {
 const STORAGE_KEYS = {
   accessToken: 'CUSTOMER_token',
   refreshToken: 'CUSTOMER_refresh_token',
+  tokenType: 'CUSTOMER_tokenType',
   user: 'customer_user',
   decoded: 'customer_decoded',
+  accountId: 'accountId',
+  customerId: 'customerId',
 };
 
 type AuthContextValue = {
@@ -42,11 +46,26 @@ const AsyncStorage: any =
   require('@react-native-async-storage/async-storage').default;
 
 const persistAuthState = async (state: AuthState) => {
+  // Extract accountId and customerId from token or decoded token
+  let accountId = state.decodedToken?.accountId || null;
+  let customerId = state.decodedToken?.customerId || null;
+
+  // If not in decoded token, try to extract from accessToken
+  if (!accountId && state.accessToken) {
+    accountId = CustomerAuthService.extractAccountIdFromToken(state.accessToken);
+  }
+  if (!customerId && state.accessToken) {
+    customerId = CustomerAuthService.extractCustomerIdFromToken(state.accessToken);
+  }
+
   await AsyncStorage.multiSet([
     [STORAGE_KEYS.accessToken, state.accessToken ?? ''],
     [STORAGE_KEYS.refreshToken, state.refreshToken ?? ''],
+    [STORAGE_KEYS.tokenType, 'Bearer'],
     [STORAGE_KEYS.user, state.user ? JSON.stringify(state.user) : ''],
     [STORAGE_KEYS.decoded, state.decodedToken ? JSON.stringify(state.decodedToken) : ''],
+    [STORAGE_KEYS.accountId, accountId ?? ''],
+    [STORAGE_KEYS.customerId, customerId ?? ''],
   ]);
 };
 
@@ -54,8 +73,11 @@ const clearPersistedAuthState = async () => {
   await AsyncStorage.multiRemove([
     STORAGE_KEYS.accessToken,
     STORAGE_KEYS.refreshToken,
+    STORAGE_KEYS.tokenType,
     STORAGE_KEYS.user,
     STORAGE_KEYS.decoded,
+    STORAGE_KEYS.accountId,
+    STORAGE_KEYS.customerId,
   ]);
 };
 
@@ -63,8 +85,11 @@ const readPersistedAuthState = async (): Promise<AuthState> => {
   const entries = await AsyncStorage.multiGet([
     STORAGE_KEYS.accessToken,
     STORAGE_KEYS.refreshToken,
+    STORAGE_KEYS.tokenType,
     STORAGE_KEYS.user,
     STORAGE_KEYS.decoded,
+    STORAGE_KEYS.accountId,
+    STORAGE_KEYS.customerId,
   ]);
   const map = Object.fromEntries(entries);
   return {
@@ -126,6 +151,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { accessToken, refreshToken, user } = response.data;
     const decoded = decodeJwt(accessToken);
 
+    // Convert undefined to null for refreshToken
+    const refreshTokenValue = refreshToken ?? null;
+
     let customerProfile: CustomerProfile | null = null;
     if (decoded?.customerId) {
       customerProfile = await getCustomerById({
@@ -136,7 +164,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setAuthState({
       accessToken,
-      refreshToken,
+      refreshToken: refreshTokenValue,
       user,
       decodedToken: decoded,
       customerProfile,
@@ -144,7 +172,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     await persistAuthState({
       accessToken,
-      refreshToken,
+      refreshToken: refreshTokenValue,
       user,
       decodedToken: decoded,
       customerProfile,

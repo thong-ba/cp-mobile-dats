@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
@@ -21,6 +22,8 @@ export default function RegisterForm({
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [phone, setPhone] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Validation errors
   const [errors, setErrors] = useState<{
@@ -166,47 +169,75 @@ export default function RegisterForm({
 
       <View style={styles.field}>
         <Text style={styles.label}>Mật khẩu *</Text>
-        <TextInput
-          style={[styles.input, errors.password && styles.inputError]}
-          placeholder="••••••••"
-          value={password}
-          onChangeText={(text) => {
-            setPassword(text);
-            if (errors.password) {
-              setErrors((prev) => ({ ...prev, password: undefined }));
-            }
-            if (errors.confirmPassword && text === confirmPassword) {
-              setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
-            }
-            onFieldChange?.();
-          }}
-          secureTextEntry
-          autoCapitalize="none"
-          returnKeyType="next"
-          editable={!isSubmitting}
-        />
+        <View style={[styles.passwordContainer, errors.password && styles.passwordContainerError]}>
+          <TextInput
+            style={[styles.passwordInput, errors.password && styles.inputError]}
+            placeholder=""
+            value={password}
+            onChangeText={(text) => {
+              setPassword(text);
+              if (errors.password) {
+                setErrors((prev) => ({ ...prev, password: undefined }));
+              }
+              if (errors.confirmPassword && text === confirmPassword) {
+                setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
+              }
+              onFieldChange?.();
+            }}
+            secureTextEntry={!showPassword}
+            autoCapitalize="none"
+            returnKeyType="next"
+            editable={!isSubmitting}
+          />
+          <TouchableOpacity
+            style={styles.eyeIcon}
+            activeOpacity={0.7}
+            onPress={() => setShowPassword((prev) => !prev)}
+            disabled={isSubmitting}
+          >
+            <MaterialCommunityIcons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color="#777"
+            />
+          </TouchableOpacity>
+        </View>
         {errors.password && <Text style={styles.fieldError}>{errors.password}</Text>}
       </View>
 
       <View style={styles.field}>
         <Text style={styles.label}>Xác nhận mật khẩu *</Text>
-        <TextInput
-          style={[styles.input, errors.confirmPassword && styles.inputError]}
-          placeholder="••••••••"
-          value={confirmPassword}
-          onChangeText={(text) => {
-            setConfirmPassword(text);
-            if (errors.confirmPassword) {
-              setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
-            }
-            onFieldChange?.();
-          }}
-          secureTextEntry
-          autoCapitalize="none"
-          returnKeyType="done"
-          editable={!isSubmitting}
-          onSubmitEditing={handleSubmit}
-        />
+        <View style={[styles.passwordContainer, errors.confirmPassword && styles.passwordContainerError]}>
+          <TextInput
+            style={[styles.passwordInput, errors.confirmPassword && styles.inputError]}
+            placeholder=""
+            value={confirmPassword}
+            onChangeText={(text) => {
+              setConfirmPassword(text);
+              if (errors.confirmPassword) {
+                setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
+              }
+              onFieldChange?.();
+            }}
+            secureTextEntry={!showConfirmPassword}
+            autoCapitalize="none"
+            returnKeyType="done"
+            editable={!isSubmitting}
+            onSubmitEditing={handleSubmit}
+          />
+          <TouchableOpacity
+            style={styles.eyeIcon}
+            activeOpacity={0.7}
+            onPress={() => setShowConfirmPassword((prev) => !prev)}
+            disabled={isSubmitting}
+          >
+            <MaterialCommunityIcons
+              name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color="#777"
+            />
+          </TouchableOpacity>
+        </View>
         {errors.confirmPassword && <Text style={styles.fieldError}>{errors.confirmPassword}</Text>}
       </View>
 
@@ -285,6 +316,33 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  passwordContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    paddingLeft: 14,
+    paddingRight: 8,
+    height: 48,
+  },
+  passwordContainerError: {
+    borderColor: '#B3261E',
+    borderWidth: 1.5,
+  },
+  passwordInput: {
+    flex: 1,
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    height: '100%',
+    color: '#000',
+  },
+  eyeIcon: {
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 

@@ -1,8 +1,10 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -21,6 +23,8 @@ import {
 import { getProductById, getProductVouchers } from '../../../services/productService';
 import { Cart, CartItem } from '../../../types/cart';
 import { ProductDetail } from '../../../types/product';
+
+const CHECKOUT_SESSION_KEY = 'checkout:payload:v1';
 
 const ORANGE = '#FF6A00';
 
@@ -140,14 +144,25 @@ const CartScreen: React.FC = () => {
         setCart(data);
       } catch (error: any) {
         console.error('[CartScreen] loadCart failed', error);
-        const message =
-          error?.response?.status === 401
-            ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
-            : error?.response?.status === 404
-            ? 'Giỏ hàng trống'
-            : error?.message?.includes('Network')
-            ? 'Không có kết nối mạng. Vui lòng thử lại.'
-            : 'Không thể tải giỏ hàng. Vui lòng thử lại.';
+        
+        // Error handling based on status code
+        let message = 'Không thể tải giỏ hàng. Vui lòng thử lại.';
+        
+        if (error?.response) {
+          const status = error.response.status;
+          if (status === 401) {
+            message = 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.';
+          } else if (status === 404) {
+            message = 'Giỏ hàng trống';
+          } else if (status === 403) {
+            message = 'Bạn không có quyền truy cập giỏ hàng này';
+          } else if (status === 500) {
+            message = 'Lỗi server. Vui lòng thử lại sau.';
+          }
+        } else if (error?.message?.includes('Network') || error?.code === 'NETWORK_ERROR') {
+          message = 'Không có kết nối mạng. Vui lòng kiểm tra internet và thử lại.';
+        }
+        
         setErrorMessage(message);
       } finally {
         if (isPullRefresh) {
@@ -203,10 +218,29 @@ const CartScreen: React.FC = () => {
     void ensureProductDetails();
   }, [cart?.items, productCache]);
 
-  // Fetch shop vouchers (ALL_SHOP_VOUCHER scope) theo store
+  /**
+   * Fetch shop vouchers (ALL_SHOP_VOUCHER scope) theo store
+   * Based on the detailed documentation provided
+   * Flow:
+   * 1. Lấy danh sách unique storeIds từ items
+   * 2. Với mỗi store, lấy product đầu tiên để gọi API vouchers
+   * 3. Chỉ gọi API cho các store chưa có trong cache
+   * 4. Lọc ra vouchers có scopeType: "ALL_SHOP_VOUCHER"
+   * 5. Update cache và state
+   */
   useEffect(() => {
     const loadStoreVouchers = async () => {
-      if (!cart?.items || cart.items.length === 0 || productCache.size === 0) return;
+      if (!cart?.items || cart.items.length === 0) return;
+
+      // Wait for product cache to be populated - check if we have at least one product in cache
+      const hasProductInCache = cart.items.some(
+        (item) => item.type === 'PRODUCT' && productCache.has(item.refId),
+      );
+      
+      if (!hasProductInCache) {
+        // Product cache not ready yet, wait for it
+        return;
+      }
 
       const items = cart.items;
       const storeIds = new Set<string>();
@@ -250,8 +284,12 @@ const CartScreen: React.FC = () => {
       const voucherPromises = storesToLoad.map(async ([storeId, productId]) => {
         try {
       const voucherRes = await getProductVouchers(productId);
-      // API trả về vouchers.shopVouchers (theo response mẫu)
-      const shopVouchersList = (voucherRes.vouchers?.shopVouchers as ShopVoucherFromAPI[]) || [];
+      // API trả về vouchers.shopVouchers hoặc vouchers.shop (backward compatibility)
+      const shopVouchersList = (
+        (voucherRes.vouchers?.shopVouchers as ShopVoucherFromAPI[]) ||
+        (voucherRes.vouchers?.shop as ShopVoucherFromAPI[]) ||
+        []
+      );
 
       console.log(`[CartScreen] Loaded shop vouchers for store ${storeId}`, {
         productId,
@@ -327,9 +365,18 @@ const CartScreen: React.FC = () => {
     };
 
     void loadStoreVouchers();
-  }, [cart?.items, productCache]);
+  }, [cart?.items?.length, productCache.size]); // Use items length and cache size to trigger when cache changes
 
-  // Fetch product vouchers (PRODUCT_VOUCHER scope) theo item
+  /**
+   * Fetch product vouchers (PRODUCT_VOUCHER scope) theo item
+   * Based on the detailed documentation provided
+   * Flow:
+   * 1. Lấy danh sách product items
+   * 2. Chỉ load nếu chưa có trong cache theo productId
+   * 3. Gọi API cho từng product
+   * 4. Lọc ra vouchers có scopeType: "PRODUCT_VOUCHER"
+   * 5. Update cache theo productId và state theo cartItemId
+   */
   useEffect(() => {
     const loadProductVouchers = async () => {
       if (!cart?.items || cart.items.length === 0) return;
@@ -368,7 +415,12 @@ const CartScreen: React.FC = () => {
       const voucherPromises = itemsToLoad.map(async (item) => {
         try {
           const voucherRes = await getProductVouchers(item.refId);
-          const shopVouchersList = (voucherRes.vouchers?.shopVouchers as ShopVoucherFromAPI[]) || [];
+          // API trả về vouchers.shopVouchers hoặc vouchers.shop (backward compatibility)
+          const shopVouchersList = (
+            (voucherRes.vouchers?.shopVouchers as ShopVoucherFromAPI[]) ||
+            (voucherRes.vouchers?.shop as ShopVoucherFromAPI[]) ||
+            []
+          );
 
           // Lọc ra vouchers có scopeType: "PRODUCT_VOUCHER" hoặc scope: "PRODUCT"
           const productVouchersList = shopVouchersList.filter(
@@ -407,9 +459,12 @@ const CartScreen: React.FC = () => {
     };
 
     void loadProductVouchers();
-  }, [cart?.items]);
+  }, [cart?.items?.length]); // Use items length to trigger when items change
 
-  // Store grouping
+  /**
+   * Store grouping
+   * Group items by storeId/storeName để hiển thị theo cửa hàng
+   */
   const storeGroups = useMemo(() => {
     if (!cart?.items || cart.items.length === 0) return [];
 
@@ -438,6 +493,13 @@ const CartScreen: React.FC = () => {
     return Array.from(groups.values());
   }, [cart?.items, productCache]);
 
+  /**
+   * Handle update quantity
+   * Logic:
+   * - Clamp quantity (1-99)
+   * - Call API với simplified payload (không có vouchers)
+   * - Update cart state sau khi thành công
+   */
   const handleUpdateQuantity = useCallback(
     async (cartItemId: string, quantity: number) => {
       const customerId = authState.decodedToken?.customerId;
@@ -479,6 +541,13 @@ const CartScreen: React.FC = () => {
     [authState.accessToken, authState.decodedToken?.customerId, loadCart],
   );
 
+  /**
+   * Handle remove item
+   * Logic:
+   * - Call API để xóa item
+   * - Update cart state
+   * - Clean up selectedIds và product voucher selection
+   */
   const handleRemoveItem = useCallback(
     async (cartItemId: string) => {
       const customerId = authState.decodedToken?.customerId;
@@ -537,28 +606,105 @@ const CartScreen: React.FC = () => {
     return () => clearInterval(id);
   }, [isAuthenticated, isLoading, loadCart]);
 
-  // Clean up selectedIds when cart items change
+  /**
+   * Sync selectedIds when cart items change
+   * Logic:
+   * - Nếu giỏ trống → reset về null (không có gì để chọn)
+   * - Nếu đang dùng Set cụ thể → loại bỏ các id không còn tồn tại trong cart
+   * - Nếu tất cả items đã bị xóa → reset về null
+   */
   useEffect(() => {
-    if (selectedIds && cart?.items) {
-      const currentItemIds = new Set(cart.items.map((item) => item.cartItemId));
-      const filtered = new Set(
-        Array.from(selectedIds).filter((id) => currentItemIds.has(id)),
-      );
-      if (filtered.size !== selectedIds.size) {
-        setSelectedIds(filtered.size > 0 ? filtered : null);
-      }
+    if (!cart?.items || cart.items.length === 0) {
+      // Giỏ trống → reset về null
+      setSelectedIds(null);
+      return;
+    }
+
+    // Nếu đang ở trạng thái "mặc định tất cả được chọn" (null) → không cần làm gì
+    if (selectedIds === null) {
+      return;
+    }
+
+    // Loại bỏ các id không còn tồn tại trong cart
+    const currentItemIds = new Set(cart.items.map((item) => item.cartItemId));
+    const filtered = new Set(
+      Array.from(selectedIds).filter((id) => currentItemIds.has(id)),
+    );
+
+    // Nếu tất cả items đã bị xóa → reset về null
+    if (filtered.size === 0) {
+      setSelectedIds(null);
+    } else if (filtered.size !== selectedIds.size) {
+      // Có items bị xóa → update Set
+      setSelectedIds(filtered);
     }
   }, [cart?.items, selectedIds]);
 
-  // Computed: Selected items
+  /**
+   * Computed: Selected items
+   * Logic:
+   * - null = mặc định tất cả items được chọn
+   * - Set = chỉ các id trong Set được chọn
+   */
   const selectedItems = useMemo(() => {
-    if (!cart?.items) return [];
+    if (!cart?.items || cart.items.length === 0) return [];
     return selectedIds === null
-      ? cart.items
-      : cart.items.filter((item) => selectedIds.has(item.cartItemId));
+      ? cart.items // Mặc định: tất cả items được chọn
+      : cart.items.filter((item) => selectedIds.has(item.cartItemId)); // Chỉ items trong Set
   }, [cart?.items, selectedIds]);
 
-  // Helper: Kiểm tra voucher có active không (dựa trên startTime, endTime, status)
+  /**
+   * Computed: All items selected?
+   * Logic:
+   * - Giỏ trống → false
+   * - selectedIds === null → true (mặc định tất cả được chọn)
+   * - Tất cả items có trong selectedIds → true
+   */
+  const allSelected = useMemo(() => {
+    if (!cart?.items || cart.items.length === 0) return false;
+    if (selectedIds === null) return true; // Mặc định tất cả được chọn
+    return cart.items.every((item) => selectedIds.has(item.cartItemId));
+  }, [cart?.items, selectedIds]);
+
+  /**
+   * Computed: Total quantity of selected items
+   */
+  const totalItems = useMemo(
+    () => selectedItems.reduce((sum, item) => sum + item.quantity, 0),
+    [selectedItems],
+  );
+
+  /**
+   * Helper: Kiểm tra voucher có đủ điều kiện minOrderValue không
+   * Logic:
+   * - Nếu không có minOrderValue → luôn eligible
+   * - Tính subtotal gốc của store (chỉ tính items được chọn)
+   * - So sánh với minOrderValue
+   */
+  const isVoucherEligible = useCallback(
+    (voucher: ShopVoucherFromAPI, storeId: string): boolean => {
+      if (!voucher.minOrderValue) return true; // Không có minOrderValue thì luôn eligible
+
+      // Tính subtotal gốc của store (chỉ tính items được chọn)
+      const storeItems = selectedItems.filter((item) => {
+        if (item.type !== 'PRODUCT') return false;
+        const product = productCache.get(item.refId);
+        return product?.storeId === storeId;
+      });
+
+      const storeBaseSubtotal = storeItems.reduce(
+        (sum, item) => sum + (item.baseUnitPrice ?? item.unitPrice) * item.quantity,
+        0,
+      );
+
+      return storeBaseSubtotal >= voucher.minOrderValue;
+    },
+    [selectedItems, productCache],
+  );
+
+  /**
+   * Helper: Kiểm tra voucher có active không (dựa trên startTime, endTime, status)
+   */
   const isVoucherActive = useCallback((voucher: ShopVoucherFromAPI): boolean => {
     const now = new Date();
     
@@ -600,7 +746,16 @@ const CartScreen: React.FC = () => {
     return true;
   }, []);
 
-  // Computed: Price calculations với vouchers
+  /**
+   * Computed: Price calculations với vouchers
+   * Theo logic nghiệp vụ TMĐT chuẩn:
+   * 1. Platform Campaign → áp dụng tự động bởi backend (đã có trong unitPrice)
+   * 2. Shop Voucher (ALL_SHOP_VOUCHER) → tính trên giá SAU campaign (unitPrice)
+   * 3. Product Voucher (PRODUCT_VOUCHER) → tính trên platformCampaignPrice hoặc baseUnitPrice
+   * 
+   * QUAN TRỌNG: Shop Voucher và Product Voucher được tính ĐỘC LẬP và CỘNG DỒN
+   * Final Total = currentSubtotal - shopVoucherDiscount - productVoucherDiscount
+   */
   const priceCalculations = useMemo(() => {
     if (!selectedItems.length) {
       return {
@@ -614,26 +769,29 @@ const CartScreen: React.FC = () => {
       };
     }
 
-    // Sử dụng giá trị từ API thay vì tính lại
-    // API trả về: subtotal (tổng lineTotal), discountTotal (tổng giảm), grandTotal
-    // Tính baseSubtotal từ baseUnitPrice để hiển thị "Giá gốc"
+    // STEP 1: Base Subtotal (Giá gốc)
+    // Tổng giá gốc trước khi áp dụng bất kỳ discount nào
     const baseSubtotal = selectedItems.reduce((sum, item) => {
       const base = item.baseUnitPrice ?? item.unitPrice;
       return sum + base * item.quantity;
     }, 0);
 
-    // Current subtotal: sử dụng từ cart.subtotal (tổng lineTotal từ API)
-    // Hoặc tính từ lineTotal của từng item nếu cần
-    const currentSubtotal = cart?.subtotal ?? selectedItems.reduce(
-      (sum, item) => sum + item.lineTotal,
+    // STEP 2: Current Subtotal (Giá sau Platform Campaign)
+    // Platform campaign đã được backend tính sẵn trong unitPrice
+    // Tính tổng giá sau campaign cho tất cả items
+    const currentSubtotal = selectedItems.reduce(
+      (sum, item) => sum + item.unitPrice * item.quantity,
       0,
     );
 
-    // Platform discount = chênh lệch giữa giá gốc và giá sau campaign
+    // Platform Discount Total = chênh lệch giữa giá gốc và giá sau campaign
     const platformDiscountTotal = Math.max(0, baseSubtotal - currentSubtotal);
 
-    // Shop voucher discount (ALL_SHOP_VOUCHER scope)
+    // STEP 3: Shop Voucher Discount (ALL_SHOP_VOUCHER scope)
+    // Tính trên giá SAU platform campaign (unitPrice)
+    // Kiểm tra minOrderValue trên giá gốc (baseUnitPrice)
     let shopVoucherDiscount = 0;
+
     selectedShopVouchers.forEach((voucherInfo, storeId) => {
       const vouchers = storeVouchers.get(storeId) || [];
       const voucher = vouchers.find(
@@ -660,8 +818,7 @@ const CartScreen: React.FC = () => {
         return;
       }
 
-      // Tính subtotal của store này (chỉ items được chọn)
-      // Sử dụng unitPrice (giá sau platform campaign) để tính shop voucher discount
+      // Lấy items của store này (chỉ items được chọn)
       const storeItems = selectedItems.filter((item) => {
         if (item.type !== 'PRODUCT') return false;
         const product = productCache.get(item.refId);
@@ -673,88 +830,70 @@ const CartScreen: React.FC = () => {
         return;
       }
 
-      // Tính storeSubtotal: sử dụng unitPrice (giá sau platform campaign)
-      // Đây là giá đã được backend tính sẵn với platform campaign
+      // Tính storeSubtotal: sử dụng unitPrice (giá SAU campaign) để tính discount
       const storeSubtotal = storeItems.reduce(
-        (sum, item) => {
-          const itemTotal = item.unitPrice * item.quantity;
-          return sum + itemTotal;
-        },
+        (sum, item) => sum + item.unitPrice * item.quantity,
         0,
       );
+
+      // Tính storeBaseSubtotal: sử dụng baseUnitPrice (giá gốc) để kiểm tra minOrderValue
+      const storeBaseSubtotal = storeItems.reduce(
+        (sum, item) => sum + (item.baseUnitPrice ?? item.unitPrice) * item.quantity,
+        0,
+      );
+
+      // Kiểm tra minOrderValue (dùng giá gốc để kiểm tra điều kiện)
+      if (voucher.minOrderValue && storeBaseSubtotal < voucher.minOrderValue) {
+        console.warn('[CartScreen] Store base subtotal below minOrderValue', {
+          storeId,
+          storeBaseSubtotal,
+          minOrderValue: voucher.minOrderValue,
+        });
+        return; // Không đủ điều kiện minOrderValue
+      }
+
+      // Tính discount trên giá SAU campaign (unitPrice)
+      let storeDiscount = 0;
+      if (voucher.discountPercent !== null && voucher.discountPercent !== undefined && voucher.discountPercent > 0) {
+        // PERCENT: Tính trên giá sau campaign
+        const discount = (storeSubtotal * voucher.discountPercent) / 100;
+        // Áp dụng maxDiscountValue nếu có
+        storeDiscount = voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
+          ? Math.min(discount, voucher.maxDiscountValue)
+          : discount;
+      } else if (voucher.discountValue !== null && voucher.discountValue !== undefined && voucher.discountValue > 0) {
+        // FIXED: Trừ tiền trực tiếp
+        storeDiscount = voucher.discountValue;
+      } else {
+        console.warn('[CartScreen] Shop voucher missing discount values', {
+          storeId,
+          shopVoucherId: voucher.shopVoucherId || voucher.voucherId,
+          code: voucher.code,
+        });
+        return;
+      }
+
+      shopVoucherDiscount += Math.round(storeDiscount);
 
       throttledLog('shop_voucher_calculation', () => {
         console.log('[CartScreen] Shop voucher calculation', {
           storeId,
           storeItemsCount: storeItems.length,
           storeSubtotal,
-          voucher: {
-            shopVoucherId: voucher.shopVoucherId || voucher.voucherId,
-            code: voucher.code,
-            type: voucher.type,
-            discountPercent: voucher.discountPercent,
-            discountValue: voucher.discountValue,
-            maxDiscountValue: voucher.maxDiscountValue,
-            minOrderValue: voucher.minOrderValue,
-          },
-        });
-      });
-
-      // Kiểm tra minOrderValue
-      if (voucher.minOrderValue && storeSubtotal < voucher.minOrderValue) {
-        console.warn('[CartScreen] Store subtotal below minOrderValue', {
-          storeId,
-          storeSubtotal,
-          minOrderValue: voucher.minOrderValue,
-        });
-        return; // Không đủ điều kiện minOrderValue
-      }
-
-      // Tính discount
-      // Logic: Nếu có discountPercent → PERCENT, nếu có discountValue → FIXED
-      // API response không có field 'type', chỉ có discountPercent và discountValue
-      if (voucher.discountPercent !== null && voucher.discountPercent !== undefined && voucher.discountPercent > 0) {
-        // Tính số tiền giảm theo phần trăm
-        const discount = (storeSubtotal * voucher.discountPercent) / 100;
-        // Áp dụng maxDiscountValue nếu có
-        const finalDiscount = voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
-          ? Math.min(discount, voucher.maxDiscountValue)
-          : discount;
-        shopVoucherDiscount += Math.round(finalDiscount); // Round để tránh số thập phân
-        throttledLog('shop_voucher_percent_calculated', () => {
-          console.log('[CartScreen] Shop voucher PERCENT discount calculated', {
-            storeId,
-            storeSubtotal,
-            discountPercent: voucher.discountPercent,
-            discount,
-            maxDiscountValue: voucher.maxDiscountValue,
-            finalDiscount,
-            shopVoucherDiscount,
-          });
-        });
-      } else if (voucher.discountValue !== null && voucher.discountValue !== undefined && voucher.discountValue > 0) {
-        // Giảm giá cố định
-        shopVoucherDiscount += Math.round(voucher.discountValue);
-        throttledLog('shop_voucher_fixed_applied', () => {
-          console.log('[CartScreen] Shop voucher FIXED discount applied', {
-            storeId,
-            discountValue: voucher.discountValue,
-            shopVoucherDiscount,
-          });
-        });
-      } else {
-        console.warn('[CartScreen] Shop voucher missing discount values', {
-          storeId,
-          shopVoucherId: voucher.shopVoucherId || voucher.voucherId,
-          code: voucher.code,
+          storeBaseSubtotal,
           discountPercent: voucher.discountPercent,
           discountValue: voucher.discountValue,
+          storeDiscount,
+          shopVoucherDiscount,
         });
-      }
+      });
     });
 
-    // Product voucher discount (PRODUCT_VOUCHER scope)
+    // STEP 4: Product Voucher Discount (PRODUCT_VOUCHER scope)
+    // Tính trên platformCampaignPrice (nếu có) hoặc baseUnitPrice/unitPrice
+    // QUAN TRỌNG: Tính ĐỘC LẬP với shop voucher, không phải tuần tự
     let productVoucherDiscount = 0;
+
     selectedProductVouchers.forEach((voucherInfo, cartItemId) => {
       const vouchers = productVouchers.get(cartItemId) || [];
       const voucher = vouchers.find(
@@ -770,38 +909,44 @@ const CartScreen: React.FC = () => {
       const item = selectedItems.find((it) => it.cartItemId === cartItemId);
       if (!item) return;
 
-      // Tính subtotal của item này
-      // Quan trọng: Nếu có platform campaign, dùng platformCampaignPrice
-      // Ngược lại, dùng baseUnitPrice hoặc unitPrice
-      const priceForVoucherCalculation =
+      // Xác định giá để tính voucher discount
+      // Ưu tiên: platformCampaignPrice (nếu có và đang trong campaign)
+      // Fallback: baseUnitPrice hoặc unitPrice
+      const priceForVoucherCalculation = 
         item.inPlatformCampaign &&
         !item.campaignUsageExceeded &&
-        item.platformCampaignPrice !== undefined &&
-        item.platformCampaignPrice !== null
-          ? item.platformCampaignPrice // Giá sau platform campaign
-          : item.baseUnitPrice ?? item.unitPrice; // Giá gốc hoặc giá hiện tại
+        item.platformCampaignPrice !== null &&
+        item.platformCampaignPrice !== undefined
+          ? item.platformCampaignPrice  // Ưu tiên giá campaign
+          : (item.baseUnitPrice ?? item.unitPrice); // Fallback giá gốc hoặc giá hiện tại
 
       const itemSubtotal = priceForVoucherCalculation * item.quantity;
 
-      // Kiểm tra minOrderValue
+      // Kiểm tra minOrderValue (dùng giá đã tính để kiểm tra)
       if (voucher.minOrderValue && itemSubtotal < voucher.minOrderValue) {
+        console.warn('[CartScreen] Item subtotal below minOrderValue', {
+          cartItemId,
+          itemSubtotal,
+          minOrderValue: voucher.minOrderValue,
+        });
         return; // Không đủ điều kiện minOrderValue
       }
 
-      // Tính discount
-      // Logic: Nếu có discountPercent → PERCENT, nếu có discountValue → FIXED
-      // API response không có field 'type', chỉ có discountPercent và discountValue
+      // Tính discount trên giá đã xác định
+      let itemDiscount = 0;
       if (voucher.discountPercent !== null && voucher.discountPercent !== undefined && voucher.discountPercent > 0) {
-        // Tính số tiền giảm theo phần trăm
+        // PERCENT: Tính trên giá đã xác định
         const discount = (itemSubtotal * voucher.discountPercent) / 100;
         // Áp dụng maxDiscountValue nếu có
-        productVoucherDiscount += voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
+        itemDiscount = voucher.maxDiscountValue !== null && voucher.maxDiscountValue !== undefined
           ? Math.min(discount, voucher.maxDiscountValue)
           : discount;
       } else if (voucher.discountValue !== null && voucher.discountValue !== undefined && voucher.discountValue > 0) {
-        // Giảm giá cố định
-        productVoucherDiscount += voucher.discountValue;
+        // FIXED: Trừ tiền trực tiếp
+        itemDiscount = voucher.discountValue;
       }
+
+      productVoucherDiscount += Math.round(itemDiscount);
     });
 
     // Other store discount: từ cart.discountTotal (backend đã tính sẵn)
@@ -826,53 +971,41 @@ const CartScreen: React.FC = () => {
       // Nếu cart.discountTotal <= calculatedVoucherDiscount, không có otherStoreDiscount
     }
 
-    // Grand total = Current Subtotal - Shop Voucher Discount - Product Voucher Discount
-    // Logic:
-    // - Nếu user đã chọn shop voucher ở frontend → trừ shopVoucherDiscount
-    // - Nếu user chưa chọn shop voucher nhưng backend đã tính → trừ otherStoreDiscount
-    // - otherStoreDiscount chỉ được trừ khi user chưa chọn shop voucher (shopVoucherDiscount === 0)
-    // - Ưu tiên sử dụng cart.grandTotal từ API nếu không có voucher được chọn ở frontend
-    const totalDiscount = shopVoucherDiscount > 0 
-      ? shopVoucherDiscount + productVoucherDiscount
-      : otherStoreDiscount + productVoucherDiscount;
-    
-    // Nếu không có voucher được chọn ở frontend, sử dụng grandTotal từ API
-    // Nếu có voucher được chọn, tính từ frontend
-    const total = shopVoucherDiscount > 0 || productVoucherDiscount > 0
-      ? Math.max(0, currentSubtotal - totalDiscount)
-      : (cart?.grandTotal ?? Math.max(0, currentSubtotal - totalDiscount));
+    // STEP 5: Final Total
+    // Giá cuối cùng = currentSubtotal - shopVoucherDiscount - productVoucherDiscount
+    // Shop Voucher và Product Voucher được tính ĐỘC LẬP và CỘNG DỒN
+    const finalTotal = Math.max(0, currentSubtotal - shopVoucherDiscount - productVoucherDiscount);
 
     // Debug log để kiểm tra tính toán (throttled to once per 30 seconds)
     throttledLog('price_calculations_summary', () => {
-      console.log('[CartScreen] Price calculations summary', {
+      console.log('[CartScreen] Price calculations summary (Independent)', {
         baseSubtotal,
         currentSubtotal,
         platformDiscountTotal,
         shopVoucherDiscount,
         productVoucherDiscount,
+        finalTotal,
         otherStoreDiscount,
         cartDiscountTotal: cart?.discountTotal,
         cartGrandTotal: cart?.grandTotal,
-        total,
         selectedItemsCount: selectedItems.length,
         selectedShopVouchersCount: selectedShopVouchers.size,
         selectedProductVouchersCount: selectedProductVouchers.size,
-        selectedShopVouchers: Array.from(selectedShopVouchers.entries()).map(([storeId, voucher]) => ({
-          storeId,
-          shopVoucherId: voucher.shopVoucherId,
-          code: voucher.code,
-        })),
+        calculation: {
+          formula: 'finalTotal = currentSubtotal - shopVoucherDiscount - productVoucherDiscount',
+          result: `${currentSubtotal} - ${shopVoucherDiscount} - ${productVoucherDiscount} = ${finalTotal}`,
+        },
       });
     });
 
     return {
       baseSubtotal,
-      currentSubtotal,
+      currentSubtotal, // Giá sau platform campaign
       platformDiscountTotal,
       shopVoucherDiscount,
       productVoucherDiscount,
       otherStoreDiscount,
-      total,
+      total: finalTotal,
     };
   }, [
     selectedItems,
@@ -1018,6 +1151,34 @@ const CartScreen: React.FC = () => {
           onRemoveItem={handleRemoveItem}
           onQuantityChange={handleUpdateQuantity}
           onSelectShopVoucher={(storeId, shopVoucherId, code) => {
+            // Kiểm tra voucher eligibility trước khi chọn
+            if (shopVoucherId) {
+              const vouchers = storeVouchers.get(storeId) || [];
+              const voucher = vouchers.find(
+                (v: ShopVoucherFromAPI) => (v.shopVoucherId || v.voucherId) === shopVoucherId,
+              );
+              
+              if (voucher && !isVoucherEligible(voucher, storeId)) {
+                // Tính subtotal gốc để hiển thị warning
+                const storeItems = selectedItems.filter((item) => {
+                  if (item.type !== 'PRODUCT') return false;
+                  const product = productCache.get(item.refId);
+                  return product?.storeId === storeId;
+                });
+                const storeBaseSubtotal = storeItems.reduce(
+                  (sum, item) => sum + (item.baseUnitPrice ?? item.unitPrice) * item.quantity,
+                  0,
+                );
+                const missingAmount = voucher.minOrderValue! - storeBaseSubtotal;
+                
+                Alert.alert(
+                  'Không thể áp dụng voucher',
+                  `Voucher "${voucher.title || voucher.code}" yêu cầu đơn hàng tối thiểu ${formatCurrencyVND(voucher.minOrderValue!)}. Bạn cần thêm ${formatCurrencyVND(missingAmount)} nữa để sử dụng voucher này.`,
+                );
+                return;
+              }
+            }
+            
             setSelectedShopVouchers((prev) => {
               const next = new Map(prev);
               if (shopVoucherId) {
@@ -1101,39 +1262,65 @@ const CartScreen: React.FC = () => {
         </View>
         <Button
           mode="contained"
-          onPress={() => {
-            // Prepare checkout payload với vouchers
+          onPress={async () => {
+            // 1. Lấy danh sách cartItemIds được chọn
             const selectedCartItemIds =
               selectedIds === null
                 ? cart.items.map((item) => item.cartItemId)
                 : Array.from(selectedIds);
 
+            if (selectedCartItemIds.length === 0) {
+              Alert.alert('Thông báo', 'Vui lòng chọn ít nhất một sản phẩm để thanh toán.');
+              return;
+            }
+
+            // 2. Build storeVouchers payload: Map<storeId, { shopVoucherId, code }>
             const storeVouchersPayload: Record<string, SelectedVoucher> = {};
             selectedShopVouchers.forEach((voucherInfo, storeId) => {
               storeVouchersPayload[storeId] = voucherInfo;
             });
 
+            // 3. Build productVouchers payload: Map<cartItemId, { shopVoucherId, code }>
             const productVouchersPayload: Record<string, SelectedVoucher> = {};
             selectedProductVouchers.forEach((voucherInfo, cartItemId) => {
+              // Chỉ lưu voucher của items được chọn
               if (selectedCartItemIds.includes(cartItemId)) {
                 productVouchersPayload[cartItemId] = voucherInfo;
               }
             });
 
-            // @ts-ignore
-            navigation.navigate('Checkout', {
-              cart,
+            // 4. Build payload
+            const payload = {
               selectedCartItemIds,
               storeVouchers: storeVouchersPayload,
               productVouchers: productVouchersPayload,
-            });
+              selectedAddressId: null,
+              createdAt: Date.now(),
+            };
+
+            // 5. Save to AsyncStorage
+            try {
+              await AsyncStorage.setItem(CHECKOUT_SESSION_KEY, JSON.stringify(payload));
+              
+              // 6. Navigate to Checkout
+              // @ts-ignore
+              navigation.navigate('Checkout', {
+                cart,
+                selectedCartItemIds,
+                storeVouchers: storeVouchersPayload,
+                productVouchers: productVouchersPayload,
+              });
+            } catch (err) {
+              console.error('[CartScreen] Failed to save checkout session payload:', err);
+              Alert.alert('Lỗi', 'Không thể lưu thông tin thanh toán. Vui lòng thử lại.');
+            }
           }}
           style={styles.checkoutButton}
           contentStyle={styles.checkoutButtonContent}
           labelStyle={styles.checkoutButtonLabel}
           disabled={selectedItems.length === 0}
         >
-          Thanh toán {selectedItems.length > 0 ? `(${selectedItems.length})` : ''}
+          Thanh toán {selectedItems.length > 0 ? `(${totalItems} sản phẩm)` : ''}
         </Button>
       </View>
     </View>

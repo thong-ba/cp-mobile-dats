@@ -7,12 +7,26 @@ type LoginFormProps = {
   hideTitle?: boolean;
   isSubmitting?: boolean;
   errorMessage?: string | null;
+  initialEmail?: string; // Pre-fill email from register
 };
 
-export default function LoginForm({ onSubmit, hideTitle, isSubmitting, errorMessage }: LoginFormProps) {
-  const [email, setEmail] = useState('');
+export default function LoginForm({ 
+  onSubmit, 
+  hideTitle, 
+  isSubmitting, 
+  errorMessage,
+  initialEmail = '',
+}: LoginFormProps) {
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // Update email when initialEmail changes (from route params)
+  React.useEffect(() => {
+    if (initialEmail) {
+      setEmail(initialEmail);
+    }
+  }, [initialEmail]);
 
   const handleSubmit = () => {
     if (isSubmitting) {
