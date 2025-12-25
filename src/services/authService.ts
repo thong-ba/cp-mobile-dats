@@ -52,13 +52,26 @@ export const resendVerifyEmail = async (
     const { data } = await httpClient.post(RESEND_VERIFY_EMAIL_ENDPOINT, { email, role });
     return {
       status: 200,
-      message: data?.message || 'Đã gửi lại email xác nhận',
+      message: data?.message || 'Đã gửi lại email xác nhận thành công',
       data: data?.data ?? null,
     };
   } catch (error: any) {
+    const status = error.response?.status || 0;
+    let message = error.response?.data?.message || 'Không thể gửi lại email xác nhận';
+    
+    // Xử lý lỗi 404 đặc biệt
+    if (status === 404) {
+      message = 'Tài khoản không tồn tại';
+    }
+    
+    // Xử lý lỗi network
+    if (status === 0 || !error.response) {
+      message = 'Lỗi kết nối. Vui lòng kiểm tra internet.';
+    }
+    
     return {
-      status: error.response?.status || 0,
-      message: error.response?.data?.message || 'Không thể gửi lại email xác nhận',
+      status,
+      message,
       data: null,
     };
   }
@@ -72,13 +85,26 @@ export const forgotPassword = async (email: string): Promise<{ status: number; m
     const { data } = await httpClient.post(FORGOT_PASSWORD_ENDPOINT, { email });
     return {
       status: 200,
-      message: data?.message || 'Đã gửi email đặt lại mật khẩu',
+      message: data?.message || 'Email đặt lại mật khẩu đã được gửi. Vui lòng kiểm tra hộp thư của bạn.',
       data: data?.data ?? null,
     };
   } catch (error: any) {
+    const status = error.response?.status || 0;
+    let message = error.response?.data?.message || 'Không thể gửi email reset';
+    
+    // Xử lý lỗi 404 đặc biệt
+    if (status === 404) {
+      message = 'Email không tồn tại trong hệ thống';
+    }
+    
+    // Xử lý lỗi network
+    if (status === 0 || !error.response) {
+      message = 'Lỗi kết nối. Vui lòng kiểm tra internet.';
+    }
+    
     return {
-      status: error.response?.status || 0,
-      message: error.response?.data?.message || 'Không thể gửi email reset',
+      status,
+      message,
       data: null,
     };
   }

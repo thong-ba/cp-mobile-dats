@@ -8,6 +8,10 @@ type LoginFormProps = {
   isSubmitting?: boolean;
   errorMessage?: string | null;
   initialEmail?: string; // Pre-fill email from register
+  onForgotPassword?: () => void; // Callback khi click "Quên mật khẩu"
+  onResendVerifyEmail?: () => void; // Callback khi click "Gửi lại mail xác nhận"
+  resendCooldown?: number; // Thời gian đếm ngược (giây) cho resend verify email
+  onEmailChange?: (email: string) => void; // Callback khi email thay đổi
 };
 
 export default function LoginForm({ 
@@ -16,6 +20,10 @@ export default function LoginForm({
   isSubmitting, 
   errorMessage,
   initialEmail = '',
+  onForgotPassword,
+  onResendVerifyEmail,
+  resendCooldown = 0,
+  onEmailChange,
 }: LoginFormProps) {
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
@@ -27,6 +35,11 @@ export default function LoginForm({
       setEmail(initialEmail);
     }
   }, [initialEmail]);
+
+  // Notify parent when email changes
+  React.useEffect(() => {
+    onEmailChange?.(email);
+  }, [email, onEmailChange]);
 
   const handleSubmit = () => {
     if (isSubmitting) {
@@ -82,6 +95,38 @@ export default function LoginForm({
             />
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* Forgot Password & Resend Verify Email Row */}
+      <View style={styles.optionsRow}>
+        {onForgotPassword && (
+          <TouchableOpacity
+            onPress={onForgotPassword}
+            disabled={isSubmitting}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.forgotPasswordText}>Quên mật khẩu?</Text>
+          </TouchableOpacity>
+        )}
+        {onResendVerifyEmail && (
+          <TouchableOpacity
+            onPress={onResendVerifyEmail}
+            disabled={isSubmitting || resendCooldown > 0}
+            activeOpacity={resendCooldown > 0 ? 1 : 0.7}
+            style={styles.resendButton}
+          >
+            <Text
+              style={[
+                styles.resendButtonText,
+                (isSubmitting || resendCooldown > 0) && styles.resendButtonTextDisabled,
+              ]}
+            >
+              {resendCooldown > 0
+                ? `Gửi lại mail xác nhận (${resendCooldown}s)`
+                : 'Gửi lại mail xác nhận'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <TouchableOpacity
@@ -171,6 +216,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  optionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  forgotPasswordText: {
+    fontSize: 14,
+    color: '#FF6A00',
+    fontWeight: '600',
+  },
+  resendButton: {
+    alignSelf: 'flex-end',
+  },
+  resendButtonText: {
+    fontSize: 12,
+    color: '#FF6A00',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
+  resendButtonTextDisabled: {
+    color: '#9CA3AF',
+    textDecorationLine: 'none',
   },
 });
 
