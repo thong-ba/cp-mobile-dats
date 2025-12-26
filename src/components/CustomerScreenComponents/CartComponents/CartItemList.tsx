@@ -45,11 +45,13 @@ type Props = {
   productVouchers?: Map<string, ShopVoucherFromAPI[]>;
   selectedShopVouchers?: Map<string, SelectedVoucher>;
   selectedProductVouchers?: Map<string, SelectedVoucher>;
+  selectedIds?: Set<string> | null; // null = tất cả được chọn, Set = chỉ các id trong Set được chọn
   onCartChange?: () => void;
   onRemoveItem?: (cartItemId: string) => void;
   onQuantityChange?: (cartItemId: string, quantity: number) => void;
   onSelectShopVoucher?: (storeId: string, shopVoucherId: string | null, code: string) => void;
   onSelectProductVoucher?: (cartItemId: string, shopVoucherId: string | null, code: string) => void;
+  onToggleItem?: (cartItemId: string) => void; // Toggle selection của một item
 };
 
 const formatCurrencyVND = (value: number) =>
@@ -62,11 +64,13 @@ const CartItemList: React.FC<Props> = ({
   productVouchers = new Map(),
   selectedShopVouchers = new Map(),
   selectedProductVouchers = new Map(),
+  selectedIds = null,
   onCartChange,
   onRemoveItem,
   onQuantityChange,
   onSelectShopVoucher,
   onSelectProductVoucher,
+  onToggleItem,
 }) => {
   const [shopVoucherModal, setShopVoucherModal] = useState<{ storeId: string; visible: boolean }>({
     storeId: '',
@@ -145,6 +149,14 @@ const CartItemList: React.FC<Props> = ({
     return voucher.title || voucher.name || voucher.code;
   };
 
+  // Helper: Kiểm tra item có được chọn không
+  const isItemSelected = (cartItemId: string): boolean => {
+    if (selectedIds === null) {
+      return true; // Mặc định tất cả được chọn
+    }
+    return selectedIds.has(cartItemId);
+  };
+
   // Nếu có storeGroups, hiển thị theo groups; ngược lại hiển thị flat list
   const displayItems = storeGroups && storeGroups.length > 0 ? storeGroups : null;
 
@@ -199,8 +211,22 @@ const CartItemList: React.FC<Props> = ({
                   getPriceDisplay(item);
                 const hasActiveCampaign = hasPlatformPrice && hasDiscount;
 
+                const itemSelected = isItemSelected(item.cartItemId);
+
                 return (
                   <View key={item.cartItemId} style={styles.itemCard}>
+                    {/* Checkbox */}
+                    <TouchableOpacity
+                      style={styles.checkboxContainer}
+                      onPress={() => onToggleItem?.(item.cartItemId)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.checkbox, itemSelected && styles.checkboxChecked]}>
+                        {itemSelected && (
+                          <MaterialCommunityIcons name="check" size={16} color="#FFFFFF" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
                     <Image
                       source={{ uri: item.image }}
                       style={styles.itemImage}
@@ -441,8 +467,22 @@ const CartItemList: React.FC<Props> = ({
         const { priceDisplay, originalPrice, hasDiscount, hasPlatformPrice, campaignUsageExceeded } = getPriceDisplay(item);
         const hasActiveCampaign = hasPlatformPrice && hasDiscount;
 
+        const itemSelected = isItemSelected(item.cartItemId);
+
         return (
           <View key={item.cartItemId} style={styles.itemCard}>
+            {/* Checkbox */}
+            <TouchableOpacity
+              style={styles.checkboxContainer}
+              onPress={() => onToggleItem?.(item.cartItemId)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, itemSelected && styles.checkboxChecked]}>
+                {itemSelected && (
+                  <MaterialCommunityIcons name="check" size={16} color="#FFFFFF" />
+                )}
+              </View>
+            </TouchableOpacity>
             <Image source={{ uri: item.image }} style={styles.itemImage} resizeMode="contain" />
             <View style={styles.itemInfo}>
               <Text style={styles.itemName} numberOfLines={2}>
@@ -599,6 +639,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     marginBottom: 8,
+    alignItems: 'flex-start',
+  },
+  checkboxContainer: {
+    paddingTop: 4,
+    paddingRight: 4,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderWidth: 2,
+    borderColor: '#CCCCCC',
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  checkboxChecked: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
   },
   itemImage: {
     width: 100,

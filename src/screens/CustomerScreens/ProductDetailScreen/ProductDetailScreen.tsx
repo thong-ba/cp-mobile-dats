@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Chip, Snackbar } from 'react-native-paper';
 import RenderHTML from 'react-native-render-html';
+import StoreInfo from '../../../components/CustomerScreenComponents/ProductDetailComponents/StoreInfo';
 import { useAuth } from '../../../context/AuthContext';
 import { ProductStackParamList } from '../../../navigation/ProductStackNavigator';
 import {
@@ -701,10 +702,11 @@ const ProductDetailScreen: React.FC = () => {
           )}
 
           {/* Store Info */}
-          <View style={styles.storeRow}>
-            <MaterialCommunityIcons name="store" size={18} color={ORANGE} />
-            <Text style={styles.storeName}>{product.storeName}</Text>
-          </View>
+          <StoreInfo
+            storeId={product.storeId}
+            storeName={product.storeName}
+            storeAvatar={undefined}
+          />
 
           {/* Stock Status */}
           <View style={styles.stockRow}>

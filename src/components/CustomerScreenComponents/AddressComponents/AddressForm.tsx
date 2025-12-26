@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { HelperText, Switch } from 'react-native-paper';
 import type { District, Province, Ward } from '../../../services/ghnService';
@@ -30,7 +30,7 @@ const defaultValues: CreateCustomerAddressPayload = {
   ward: '',
   street: '',
   addressLine: '',
-  postalCode: '',
+  postalCode: '70000', // Mã bưu điện mặc định
   note: null,
   provinceCode: '',
   districtId: 0,
@@ -106,21 +106,6 @@ const AddressForm: React.FC<AddressFormProps> = ({
       return;
     }
 
-    if (!selectedProvince || !values.provinceCode) {
-      setError('Vui lòng chọn tỉnh/thành phố.');
-      return;
-    }
-
-    if (!selectedDistrict || !values.districtId || values.districtId === 0) {
-      setError('Vui lòng chọn quận/huyện.');
-      return;
-    }
-
-    if (!selectedWard || !values.wardCode) {
-      setError('Vui lòng chọn phường/xã.');
-      return;
-    }
-
     if (!values.street.trim()) {
       setError('Vui lòng nhập tên đường.');
       return;
@@ -131,22 +116,29 @@ const AddressForm: React.FC<AddressFormProps> = ({
       return;
     }
 
-    if (!values.addressLine.trim()) {
-      setError('Vui lòng nhập số nhà/địa chỉ chi tiết.');
-      return;
-    }
-
-    if (values.addressLine.trim().length < 5) {
-      setError('Số nhà/địa chỉ phải có ít nhất 5 ký tự.');
-      return;
-    }
-
     if (values.postalCode && !validatePostalCode(values.postalCode)) {
       setError('Mã bưu điện phải là số có 5-6 chữ số.');
       return;
     }
 
-    // Auto-build addressLine if empty
+    // Validate mã địa lý (theo tài liệu API) - kiểm tra cả selected và values để đảm bảo
+    if (!selectedProvince || !values.provinceCode || values.provinceCode.trim() === '') {
+      setError('Vui lòng chọn tỉnh/thành phố.');
+      return;
+    }
+
+    if (!selectedDistrict || !values.districtId || values.districtId === 0) {
+      setError('Vui lòng chọn quận/huyện.');
+      return;
+    }
+
+    if (!selectedWard || !values.wardCode || values.wardCode.trim() === '') {
+      setError('Vui lòng chọn phường/xã.');
+      return;
+    }
+
+    // Auto-build addressLine if empty (theo tài liệu: có thể để trống, backend sẽ tự tạo)
+    // Format: {street}, {ward}, {district}, {province}
     const finalAddressLine =
       values.addressLine.trim() ||
       `${values.street}, ${values.ward}, ${values.district}, ${values.province}`;
@@ -156,8 +148,13 @@ const AddressForm: React.FC<AddressFormProps> = ({
       addressLine: finalAddressLine,
       receiverName: values.receiverName.trim(),
       phoneNumber: values.phoneNumber.trim(),
+      // Mã bưu điện mặc định là 70000 (ẩn khỏi UI)
+      postalCode: '70000',
+      // Đảm bảo note là null nếu trống
+      note: values.note?.trim() || null,
     };
 
+    console.log('[AddressForm] Submitting payload:', JSON.stringify(finalPayload, null, 2));
     setError(null);
     await onSubmit(finalPayload);
   };
@@ -265,19 +262,7 @@ const AddressForm: React.FC<AddressFormProps> = ({
         initialWardName={initialValues?.ward}
       />
 
-      <View style={styles.row}>
-        <View style={[styles.field, styles.col]}>
-          <Text style={styles.label}>Mã bưu điện</Text>
-          <TextInput
-            style={styles.input}
-            value={values.postalCode}
-            onChangeText={(text) => handleChange('postalCode', text)}
-            placeholder="5-6 chữ số"
-            keyboardType="numeric"
-            maxLength={6}
-          />
-        </View>
-      </View>
+      {/* Mã bưu điện được ẩn, mặc định là 70000 */}
 
       <View style={styles.field}>
         <Text style={styles.label}>
@@ -293,13 +278,13 @@ const AddressForm: React.FC<AddressFormProps> = ({
 
       <View style={styles.field}>
         <Text style={styles.label}>
-          Số nhà / Địa chỉ <Text style={styles.required}>*</Text>
+          Số nhà / Địa chỉ chi tiết
         </Text>
         <TextInput
           style={styles.input}
           value={values.addressLine}
           onChangeText={(text) => handleChange('addressLine', text)}
-          placeholder="Số nhà, hẻm, tòa nhà..."
+          placeholder="Số nhà, hẻm, tòa nhà... (để trống sẽ tự động tạo)"
         />
       </View>
 

@@ -21,6 +21,7 @@ export type CustomerProfile = {
   unpaidOrderCount: number;
   lastOrderDate: string | null;
   preferredCategory: string | null;
+  legalPoint: number | null;
 };
 
 export type CustomerAddress = {

@@ -1,13 +1,31 @@
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
-import { Avatar, Button, Card, Chip, Divider, List, Snackbar, Text, useTheme } from 'react-native-paper';
+import { Platform, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import {
+  Avatar,
+  Button,
+  Card,
+  Chip,
+  Divider,
+  List,
+  Menu,
+  Modal,
+  Portal,
+  Snackbar,
+  Text,
+  TextInput,
+  useTheme,
+} from 'react-native-paper';
 import { useAuth } from '../../../context/AuthContext';
+import {
+  updateCustomerProfile,
+  UpdateCustomerProfilePayload,
+} from '../../../services/customerService';
 import { getCustomerOrders } from '../../../services/orderService';
 import { CustomerOrder } from '../../../types/order';
 
 const ProfileScreen = () => {
-  const { authState, logout, isAuthenticated } = useAuth();
+  const { authState, logout, isAuthenticated, updateCustomerProfile: updateProfileInContext } = useAuth();
   const navigation = useNavigation();
   const theme = useTheme();
   const [detailsExpanded, setDetailsExpanded] = useState(false);
@@ -15,18 +33,45 @@ const ProfileScreen = () => {
   const logoutTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState(false);
+  
+  // Edit mode state
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [genderMenuVisible, setGenderMenuVisible] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  
+  // Form state
+  const [formData, setFormData] = useState({
+    fullName: '',
+    phoneNumber: '',
+    gender: 'other' as 'male' | 'female' | 'other',
+    dateOfBirth: '',
+    avatarURL: null as string | null,
+  });
 
   const menuItems = [
     { icon: 'account-outline', label: 'Thông tin cá nhân', key: 'profile' },
     { icon: 'map-marker-outline', label: 'Địa chỉ', key: 'address' },
-    { icon: 'credit-card-outline', label: 'Phương thức thanh toán', key: 'payment' },
     { icon: 'shopping-outline', label: 'Đơn hàng của tôi', key: 'orders' },
-    { icon: 'heart-outline', label: 'Sản phẩm yêu thích', key: 'favorite' },
     { icon: 'cog-outline', label: 'Cài đặt', key: 'settings' },
-    { icon: 'help-circle-outline', label: 'Trợ giúp', key: 'help' },
   ];
 
   const profile = authState.customerProfile;
+  
+  // Initialize form data from profile
+  useEffect(() => {
+    if (profile && !isEditing) {
+      setFormData({
+        fullName: profile.fullName || '',
+        phoneNumber: profile.phoneNumber || '',
+        gender: profile.gender === 'MALE' ? 'male' : profile.gender === 'FEMALE' ? 'female' : 'other',
+        dateOfBirth: profile.dateOfBirth ? profile.dateOfBirth.split('T')[0] : '', // Convert ISO to yyyy-MM-dd
+        avatarURL: profile.avatarURL,
+      });
+    }
+  }, [profile, isEditing]);
 
   // Fetch orders để tính toán stats
   // Fetch tất cả orders (nhiều pages) để tính stats chính xác
@@ -139,14 +184,8 @@ const ProfileScreen = () => {
       { label: 'Trạng thái', value: profile.status },
       { label: 'Xác thực 2 lớp', value: profile.twoFactorEnabled ? 'Bật' : 'Tắt' },
       { label: 'Trạng thái KYC', value: profile.kycStatus },
-      { label: 'Lần đăng nhập cuối', value: profile.lastLogin },
       { label: 'Số địa chỉ', value: profile.addressCount },
-      { label: 'Số đơn hàng', value: profile.orderCount },
-      { label: 'Đơn hủy', value: profile.cancelCount },
-      { label: 'Đơn trả', value: profile.returnCount },
-      { label: 'Đơn chưa thanh toán', value: profile.unpaidOrderCount },
-      { label: 'Đơn gần nhất', value: profile.lastOrderDate },
-      { label: 'Danh mục yêu thích', value: profile.preferredCategory },
+      { label: 'Điểm uy tín', value: profile.legalPoint },
     ];
   }, [profile]);
 
@@ -166,7 +205,7 @@ const ProfileScreen = () => {
     return [
       { label: 'Tổng đơn', value: stats.total, icon: 'shopping-outline' },
       { label: 'Đơn hủy', value: stats.cancelled, icon: 'cancel' },
-      { label: 'Đơn trả', value: stats.returned, icon: 'package-variant-return' },
+      { label: 'Đơn trả', value: stats.returned, icon: 'package-variant' },
       { label: 'Chưa thanh toán', value: stats.unpaid, icon: 'credit-card-off-outline' },
     ];
   }, [orderStats, profile, isLoadingOrders, orders.length]);
@@ -195,6 +234,85 @@ const ProfileScreen = () => {
     } catch (error) {
       console.log('[ProfileScreen] logout failed', error);
       setLogoutSnackbarVisible(false);
+    }
+  };
+
+  const handleStartEdit = () => {
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    // Reset form to original profile data
+    if (profile) {
+      setFormData({
+        fullName: profile.fullName || '',
+        phoneNumber: profile.phoneNumber || '',
+        gender: profile.gender === 'MALE' ? 'male' : profile.gender === 'FEMALE' ? 'female' : 'other',
+        dateOfBirth: profile.dateOfBirth ? profile.dateOfBirth.split('T')[0] : '',
+        avatarURL: profile.avatarURL,
+      });
+    }
+    setIsEditing(false);
+  };
+
+  const handleSaveProfile = async () => {
+    const customerId = authState.decodedToken?.customerId;
+    const accessToken = authState.accessToken;
+    
+    if (!customerId || !accessToken || !profile) {
+      setSnackbarMessage('Không thể cập nhật thông tin. Vui lòng đăng nhập lại.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    // Validation
+    if (!formData.fullName.trim()) {
+      setSnackbarMessage('Vui lòng nhập họ và tên.');
+      setSnackbarVisible(true);
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      
+      // Build payload
+      const payload: UpdateCustomerProfilePayload = {
+        fullName: formData.fullName.trim(),
+        phoneNumber: formData.phoneNumber.trim() || undefined,
+        gender: formData.gender === 'male' ? 'MALE' : formData.gender === 'female' ? 'FEMALE' : null,
+        dateOfBirth: formData.dateOfBirth || null,
+        avatarURL: formData.avatarURL,
+        // Keep existing values for fields that shouldn't change
+        userName: profile.userName,
+        email: profile.email,
+        status: profile.status as any,
+        twoFactorEnabled: profile.twoFactorEnabled,
+        kycStatus: profile.kycStatus as any,
+        preferredCategory: profile.preferredCategory,
+      };
+
+      const updatedProfile = await updateCustomerProfile({
+        customerId,
+        accessToken,
+        payload,
+      });
+
+      // Update context
+      updateProfileInContext(updatedProfile);
+
+      setSnackbarMessage('Cập nhật thông tin thành công');
+      setSnackbarVisible(true);
+      setIsEditing(false);
+    } catch (error: any) {
+      console.error('[ProfileScreen] Failed to update profile:', error);
+      const errorMessage =
+        error?.response?.data?.message ||
+        error?.message ||
+        'Không thể cập nhật thông tin. Vui lòng thử lại.';
+      setSnackbarMessage(errorMessage);
+      setSnackbarVisible(true);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -279,28 +397,244 @@ const ProfileScreen = () => {
               subtitle="Cập nhật từ tài khoản khách hàng"
               left={(props) => <List.Icon {...props} icon="account-details-outline" />}
               right={(props) => (
-                <Button
-                  mode="text"
-                  compact
-                  onPress={() => setDetailsExpanded((prev) => !prev)}
-                >
-                  {detailsExpanded ? 'Thu gọn' : 'Xem tất cả'}
-                </Button>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {isEditing ? (
+                    <>
+                      <Button
+                        mode="text"
+                        compact
+                        onPress={handleCancelEdit}
+                        disabled={isSaving}
+                      >
+                        Hủy
+                      </Button>
+                      <Button
+                        mode="contained"
+                        compact
+                        onPress={handleSaveProfile}
+                        loading={isSaving}
+                        disabled={isSaving}
+                      >
+                        Lưu
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        mode="text"
+                        compact
+                        onPress={handleStartEdit}
+                      >
+                        Cập nhật
+                      </Button>
+                      <Button
+                        mode="text"
+                        compact
+                        onPress={() => setDetailsExpanded((prev) => !prev)}
+                      >
+                        {detailsExpanded ? 'Thu gọn' : 'Xem tất cả'}
+                      </Button>
+                    </>
+                  )}
+                </View>
               )}
             />
             <Card.Content>
-              {profileDetails
-                .slice(0, detailsExpanded ? profileDetails.length : 5)
-                .map((item) => (
-                  <View key={item.label} style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>{item.label}</Text>
-                    <Text style={styles.detailValue}>
-                      {item.value === null || item.value === undefined || item.value === ''
-                        ? 'Chưa cập nhật'
-                        : String(item.value)}
-                    </Text>
-                  </View>
-                ))}
+              {isEditing ? (
+                <View style={styles.editForm}>
+                  <TextInput
+                    label="Họ và tên *"
+                    value={formData.fullName}
+                    onChangeText={(text: string) => setFormData({ ...formData, fullName: text })}
+                    mode="outlined"
+                    style={styles.input}
+                  />
+                  <TextInput
+                    label="Số điện thoại"
+                    value={formData.phoneNumber}
+                    onChangeText={(text: string) => setFormData({ ...formData, phoneNumber: text })}
+                    mode="outlined"
+                    keyboardType="phone-pad"
+                    style={styles.input}
+                  />
+                  <Menu
+                    visible={genderMenuVisible}
+                    onDismiss={() => setGenderMenuVisible(false)}
+                    anchor={
+                      <TextInput
+                        label="Giới tính"
+                        value={
+                          formData.gender === 'male'
+                            ? 'Nam'
+                            : formData.gender === 'female'
+                              ? 'Nữ'
+                              : 'Khác'
+                        }
+                        mode="outlined"
+                        editable={false}
+                        right={<TextInput.Icon icon="chevron-down" />}
+                        onPressIn={() => setGenderMenuVisible(true)}
+                        style={styles.input}
+                      />
+                    }
+                  >
+                    <Menu.Item
+                      onPress={() => {
+                        setFormData({ ...formData, gender: 'male' });
+                        setGenderMenuVisible(false);
+                      }}
+                      title="Nam"
+                    />
+                    <Menu.Item
+                      onPress={() => {
+                        setFormData({ ...formData, gender: 'female' });
+                        setGenderMenuVisible(false);
+                      }}
+                      title="Nữ"
+                    />
+                    <Menu.Item
+                      onPress={() => {
+                        setFormData({ ...formData, gender: 'other' });
+                        setGenderMenuVisible(false);
+                      }}
+                      title="Khác"
+                    />
+                  </Menu>
+                  <TouchableOpacity
+                    onPress={() => setShowDatePicker(true)}
+                    style={styles.dateInputContainer}
+                  >
+                    <TextInput
+                      label="Ngày sinh"
+                      value={
+                        formData.dateOfBirth
+                          ? new Date(formData.dateOfBirth).toLocaleDateString('vi-VN', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                            })
+                          : ''
+                      }
+                      mode="outlined"
+                      placeholder="Chọn ngày sinh"
+                      editable={false}
+                      right={<TextInput.Icon icon="calendar" />}
+                      style={styles.input}
+                    />
+                  </TouchableOpacity>
+                  <Portal>
+                    <Modal
+                      visible={showDatePicker}
+                      onDismiss={() => setShowDatePicker(false)}
+                      contentContainerStyle={styles.datePickerModal}
+                      dismissable={true}
+                      dismissableBackButton={true}
+                    >
+                      <View style={styles.datePickerContent}>
+                        <Text variant="titleLarge" style={styles.datePickerTitle}>
+                          Chọn ngày sinh
+                        </Text>
+                        {Platform.OS === 'web' ? (
+                          <View style={styles.simpleDatePicker}>
+                            <TextInput
+                              label="Ngày sinh (yyyy-MM-dd)"
+                              value={formData.dateOfBirth}
+                              onChangeText={(text: string) => {
+                                setFormData({ ...formData, dateOfBirth: text });
+                              }}
+                              mode="outlined"
+                              placeholder="yyyy-MM-dd"
+                              keyboardType="numeric"
+                            />
+                          </View>
+                        ) : (
+                          <View style={styles.datePickerWrapper}>
+                            <Text style={styles.datePickerHint}>
+                              Vui lòng chọn ngày từ calendar
+                            </Text>
+                          </View>
+                        )}
+                        {Platform.OS === 'ios' && (
+                          <View style={styles.datePickerActions}>
+                            <Button onPress={() => setShowDatePicker(false)}>Hủy</Button>
+                            <Button
+                              mode="contained"
+                              onPress={() => {
+                                // Validate date format
+                                if (formData.dateOfBirth) {
+                                  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+                                  if (dateRegex.test(formData.dateOfBirth)) {
+                                    const date = new Date(formData.dateOfBirth);
+                                    if (!isNaN(date.getTime()) && date <= new Date()) {
+                                      setShowDatePicker(false);
+                                    } else {
+                                      setSnackbarMessage('Ngày không hợp lệ hoặc trong tương lai');
+                                      setSnackbarVisible(true);
+                                    }
+                                  } else {
+                                    setSnackbarMessage('Vui lòng nhập đúng định dạng yyyy-MM-dd');
+                                    setSnackbarVisible(true);
+                                  }
+                                } else {
+                                  setShowDatePicker(false);
+                                }
+                              }}
+                            >
+                              Xác nhận
+                            </Button>
+                          </View>
+                        )}
+                        {Platform.OS === 'web' && (
+                          <View style={styles.datePickerActions}>
+                            <Button onPress={() => setShowDatePicker(false)}>Hủy</Button>
+                            <Button
+                              mode="contained"
+                              onPress={() => {
+                                // Validate date format
+                                if (formData.dateOfBirth) {
+                                  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+                                  if (dateRegex.test(formData.dateOfBirth)) {
+                                    const date = new Date(formData.dateOfBirth);
+                                    if (!isNaN(date.getTime()) && date <= new Date()) {
+                                      setShowDatePicker(false);
+                                    } else {
+                                      setSnackbarMessage('Ngày không hợp lệ hoặc trong tương lai');
+                                      setSnackbarVisible(true);
+                                    }
+                                  } else {
+                                    setSnackbarMessage('Vui lòng nhập đúng định dạng yyyy-MM-dd');
+                                    setSnackbarVisible(true);
+                                  }
+                                } else {
+                                  setShowDatePicker(false);
+                                }
+                              }}
+                            >
+                              Xác nhận
+                            </Button>
+                          </View>
+                        )}
+                      </View>
+                    </Modal>
+                  </Portal>
+                  <Text variant="bodySmall" style={styles.emailWarning}>
+                    Email không thể thay đổi. Vui lòng liên hệ CSKH nếu bạn cần cập nhật email.
+                  </Text>
+                </View>
+              ) : (
+                profileDetails
+                  .slice(0, detailsExpanded ? profileDetails.length : 5)
+                  .map((item) => (
+                    <View key={item.label} style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>{item.label}</Text>
+                      <Text style={styles.detailValue}>
+                        {item.value === null || item.value === undefined || item.value === ''
+                          ? 'Chưa cập nhật'
+                          : String(item.value)}
+                      </Text>
+                    </View>
+                  ))
+              )}
             </Card.Content>
           </Card>
           {menuItems
@@ -331,6 +665,13 @@ const ProfileScreen = () => {
         duration={3000}
       >
         Đăng xuất thành công
+      </Snackbar>
+      <Snackbar
+        visible={snackbarVisible}
+        onDismiss={() => setSnackbarVisible(false)}
+        duration={3000}
+      >
+        {snackbarMessage}
       </Snackbar>
     </>
   );
@@ -409,6 +750,54 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'right',
     color: '#272727',
+  },
+  editForm: {
+    gap: 16,
+  },
+  input: {
+    marginBottom: 8,
+  },
+  emailWarning: {
+    color: '#FF6A00',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  genderButton: {
+    width: '100%',
+  },
+  dateInputContainer: {
+    width: '100%',
+  },
+  datePickerModal: {
+    backgroundColor: 'white',
+    padding: 20,
+    margin: 20,
+    borderRadius: 10,
+  },
+  datePickerContent: {
+    gap: 16,
+  },
+  datePickerTitle: {
+    marginBottom: 8,
+    fontWeight: 'bold',
+  },
+  datePickerWrapper: {
+    minHeight: 200,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  datePickerHint: {
+    color: '#666',
+    textAlign: 'center',
+  },
+  simpleDatePicker: {
+    gap: 8,
+  },
+  datePickerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 16,
   },
 });
 

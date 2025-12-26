@@ -37,6 +37,7 @@ type AuthContextValue = {
   isAuthenticated: boolean;
   login: (payload: LoginRequest) => Promise<LoginResponse['data']>;
   logout: () => Promise<void>;
+  updateCustomerProfile: (profile: CustomerProfile) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -195,12 +196,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const updateCustomerProfile = (profile: CustomerProfile) => {
+    setAuthState((prev) => ({
+      ...prev,
+      customerProfile: profile,
+    }));
+    // Also persist to storage
+    persistAuthState({
+      ...authState,
+      customerProfile: profile,
+    }).catch((err) => {
+      console.warn('[AuthContext] Failed to persist updated profile:', err);
+    });
+  };
+
   const value = useMemo<AuthContextValue>(
     () => ({
       authState,
       isAuthenticated: Boolean(authState.accessToken && authState.decodedToken) && !isHydrating,
       login,
       logout,
+      updateCustomerProfile,
     }),
     [authState, isHydrating],
   );

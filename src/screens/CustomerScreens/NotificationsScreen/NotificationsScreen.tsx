@@ -59,10 +59,25 @@ const NotificationsScreen: React.FC<NotificationScreenProps> = () => {
 
         const response = await getNotifications(authState, pageNum, 20);
 
+        // Sort notifications theo createdAt descending (mới nhất trước)
+        // Nếu createdAt là null, coi như timestamp = 0 (sẽ ở cuối)
+        const sortedContent = (response.content || []).slice().sort((a, b) => {
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA; // Descending: mới nhất trước
+        });
+
         if (append) {
-          setNotifications((prev) => [...prev, ...(response.content || [])]);
+          // Khi append, cần merge và sort lại toàn bộ danh sách
+          const merged = [...notifications, ...sortedContent];
+          const mergedSorted = merged.slice().sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return dateB - dateA; // Descending: mới nhất trước
+          });
+          setNotifications(mergedSorted);
         } else {
-          setNotifications(response.content || []);
+          setNotifications(sortedContent);
         }
 
         setTotalPages(response.totalPages || 1);
@@ -137,33 +152,77 @@ const NotificationsScreen: React.FC<NotificationScreenProps> = () => {
   const navigateToActionUrl = (actionUrl: string) => {
     if (!actionUrl) return;
 
+    // NotificationsScreen nằm trong BottomTabNavigator
+    // Orders screen nằm trong CustomerStackNavigator (bên trong Profile tab)
+    // Cần sử dụng nested navigation để navigate từ tab này sang screen trong tab khác
+    
     // Map legacy customer order paths to current customer portal routes
     if (actionUrl === '/customer/orders' || actionUrl === '/customer/orders/') {
-      navigation.navigate('Orders' as never);
+      // Navigate đến Profile tab, sau đó vào Orders screen
+      // @ts-ignore - nested navigation
+      navigation.navigate('Profile', {
+        screen: 'Orders',
+      });
       return;
     }
 
+    // Xử lý path có orderId: /customer/orders/{orderId}
     if (actionUrl.startsWith('/customer/orders/')) {
-      const orderId = actionUrl.substring('/customer/orders/'.length);
+      const orderId = actionUrl.substring('/customer/orders/'.length).trim();
       if (orderId) {
-        // Navigate to orders screen, order detail will be handled there
-        navigation.navigate('Orders' as never);
+        // Navigate đến Profile tab, sau đó vào Orders screen với orderId
+        // OrderScreen sẽ tự động load và mở order detail modal
+        // @ts-ignore - nested navigation
+        navigation.navigate('Profile', {
+          screen: 'Orders',
+          params: { orderId },
+        });
       } else {
-        navigation.navigate('Orders' as never);
+        // Nếu không có orderId, chỉ navigate đến Orders screen
+        // @ts-ignore - nested navigation
+        navigation.navigate('Profile', {
+          screen: 'Orders',
+        });
       }
       return;
     }
 
-    // For other paths, try to navigate directly
-    // Note: In React Native, we might need to handle deep linking differently
+    // Xử lý path mới: /orders hoặc /orders/{orderId}
     if (actionUrl.startsWith('/orders')) {
-      navigation.navigate('Orders' as never);
-    } else if (actionUrl.startsWith('/profile')) {
-      navigation.navigate('ProfileMain' as never);
-    } else {
-      // For other URLs, just navigate to orders as fallback
-      navigation.navigate('Orders' as never);
+      const orderIdMatch = actionUrl.match(/^\/orders\/(.+)$/);
+      if (orderIdMatch && orderIdMatch[1]) {
+        // Có orderId trong path
+        const orderId = orderIdMatch[1].trim();
+        // @ts-ignore - nested navigation
+        navigation.navigate('Profile', {
+          screen: 'Orders',
+          params: { orderId },
+        });
+      } else {
+        // Chỉ /orders, không có orderId
+        // @ts-ignore - nested navigation
+        navigation.navigate('Profile', {
+          screen: 'Orders',
+        });
+      }
+      return;
     }
+
+    // Xử lý path /profile
+    if (actionUrl.startsWith('/profile')) {
+      // Navigate đến Profile tab, hiển thị ProfileMain
+      // @ts-ignore - nested navigation
+      navigation.navigate('Profile', {
+        screen: 'ProfileMain',
+      });
+      return;
+    }
+
+    // Fallback: Nếu không match với bất kỳ pattern nào, navigate đến Orders screen
+    // @ts-ignore - nested navigation
+    navigation.navigate('Profile', {
+      screen: 'Orders',
+    });
   };
 
   const handleNotificationClick = async (notification: Notification) => {

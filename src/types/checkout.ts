@@ -39,6 +39,7 @@ export type CheckoutCodRequest = {
 export type CheckoutPayOSRequest = CheckoutCodRequest & {
   returnUrl: string;
   cancelUrl: string;
+  description?: string;
 };
 
 export type CheckoutCodOrder = {

@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -15,6 +15,7 @@ import { Chip, Snackbar } from 'react-native-paper';
 import OrderDetailModal from '../../../components/CustomerScreenComponents/OrderScreenComponents/OrderDetailModal';
 import OrderItemCard from '../../../components/CustomerScreenComponents/OrderScreenComponents/OrderItemCard';
 import { useAuth } from '../../../context/AuthContext';
+import { CustomerStackParamList } from '../../../navigation/CustomerStackNavigator';
 import {
   cancelOrder,
   createReturnRequest,
@@ -91,8 +92,11 @@ const getStatusColor = (status: OrderStatus): string => {
   return colors[status] || '#9E9E9E';
 };
 
+type OrderScreenRouteProp = RouteProp<CustomerStackParamList, 'Orders'>;
+
 const OrderScreen: React.FC = () => {
   const navigation = useNavigation();
+  const route = useRoute<OrderScreenRouteProp>();
   const { authState, isAuthenticated } = useAuth();
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -184,6 +188,38 @@ const OrderScreen: React.FC = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, selectedStatus]);
+
+  // Xử lý orderId từ route params (khi navigate từ notification)
+  useEffect(() => {
+    const orderId = route.params?.orderId;
+    if (orderId && isAuthenticated && authState.decodedToken?.customerId && authState.accessToken) {
+      // Tự động load và mở order detail khi có orderId từ params
+      const loadAndOpenOrder = async () => {
+        try {
+          const customerId = authState.decodedToken?.customerId;
+          const accessToken = authState.accessToken;
+          if (!customerId || !accessToken) return;
+
+          setIsLoading(true);
+          const orderDetail = await getCustomerOrderById({ customerId, accessToken, orderId });
+          if (orderDetail) {
+            setSelectedOrder(orderDetail);
+          } else {
+            setSnackbarMessage('Không tìm thấy đơn hàng.');
+            setSnackbarVisible(true);
+          }
+        } catch (error: any) {
+          console.error('[OrderScreen] Failed to load order from params:', error);
+          setSnackbarMessage('Không thể tải chi tiết đơn hàng. Vui lòng thử lại.');
+          setSnackbarVisible(true);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      loadAndOpenOrder();
+    }
+  }, [route.params?.orderId, isAuthenticated, authState.decodedToken?.customerId, authState.accessToken]);
 
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);

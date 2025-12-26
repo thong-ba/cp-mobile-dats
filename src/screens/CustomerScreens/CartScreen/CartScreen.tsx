@@ -625,17 +625,21 @@ const CartScreen: React.FC = () => {
       return;
     }
 
+    // Nếu selectedIds là Set rỗng (người dùng đã unselect all) → giữ nguyên, không reset về null
+    if (selectedIds.size === 0) {
+      return;
+    }
+
     // Loại bỏ các id không còn tồn tại trong cart
     const currentItemIds = new Set(cart.items.map((item) => item.cartItemId));
     const filtered = new Set(
       Array.from(selectedIds).filter((id) => currentItemIds.has(id)),
     );
 
-    // Nếu tất cả items đã bị xóa → reset về null
-    if (filtered.size === 0) {
-      setSelectedIds(null);
-    } else if (filtered.size !== selectedIds.size) {
-      // Có items bị xóa → update Set
+    // Nếu có items bị xóa → update Set
+    // Nếu filtered.size === 0 (tất cả items đã bị xóa), giữ Set rỗng thay vì reset về null
+    // để phân biệt với trường hợp người dùng cố ý unselect all
+    if (filtered.size !== selectedIds.size) {
       setSelectedIds(filtered);
     }
   }, [cart?.items, selectedIds]);
@@ -663,8 +667,63 @@ const CartScreen: React.FC = () => {
   const allSelected = useMemo(() => {
     if (!cart?.items || cart.items.length === 0) return false;
     if (selectedIds === null) return true; // Mặc định tất cả được chọn
+    // Nếu selectedIds là Set rỗng, thì không phải tất cả được chọn
+    if (selectedIds.size === 0) return false;
     return cart.items.every((item) => selectedIds.has(item.cartItemId));
   }, [cart?.items, selectedIds]);
+
+  /**
+   * Toggle selection của một item
+   */
+  const handleToggleItem = useCallback(
+    (cartItemId: string) => {
+      if (!cart?.items || cart.items.length === 0) return;
+
+      if (selectedIds === null) {
+        // Đang ở trạng thái "tất cả được chọn" → chuyển sang Set và bỏ item này
+        const newSelected = new Set(cart.items.map((item) => item.cartItemId));
+        newSelected.delete(cartItemId);
+        setSelectedIds(newSelected.size > 0 ? newSelected : null);
+      } else {
+        // Đang ở trạng thái Set cụ thể → toggle item này
+        const newSelected = new Set(selectedIds);
+        if (newSelected.has(cartItemId)) {
+          newSelected.delete(cartItemId);
+        } else {
+          newSelected.add(cartItemId);
+        }
+        // Nếu tất cả items đã được chọn → chuyển về null
+        if (newSelected.size === cart.items.length) {
+          setSelectedIds(null);
+        } else {
+          setSelectedIds(newSelected.size > 0 ? newSelected : null);
+        }
+      }
+    },
+    [cart, selectedIds],
+  );
+
+  /**
+   * Toggle tất cả items
+   * - Click lần đầu: unselect all (bỏ chọn tất cả)
+   * - Click lần 2: select all (chọn tất cả)
+   */
+  const handleToggleAll = useCallback(() => {
+    if (!cart?.items || cart.items.length === 0) return;
+
+    // Kiểm tra trạng thái hiện tại: nếu selectedIds === null hoặc allSelected === true
+    const currentlyAllSelected = selectedIds === null || allSelected;
+
+    if (currentlyAllSelected) {
+      // Đang tất cả được chọn → bỏ chọn tất cả
+      // Sử dụng một Set mới với một giá trị đặc biệt để đảm bảo React nhận diện state change
+      // Sau đó sẽ được xử lý bởi useEffect để cleanup
+      setSelectedIds(new Set<string>());
+    } else {
+      // Đang không phải tất cả được chọn → chọn tất cả
+      setSelectedIds(null);
+    }
+  }, [cart, selectedIds, allSelected]);
 
   /**
    * Computed: Total quantity of selected items
@@ -1132,7 +1191,22 @@ const CartScreen: React.FC = () => {
           <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Giỏ hàng</Text>
-        <View style={styles.placeholder} />
+        {/* Checkbox chọn tất cả */}
+        {cart && cart.items.length > 0 && (
+          <TouchableOpacity
+            style={styles.selectAllButton}
+            onPress={handleToggleAll}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.checkbox, allSelected && styles.checkboxChecked]}>
+              {allSelected && (
+                <MaterialCommunityIcons name="check" size={16} color={ORANGE} />
+              )}
+            </View>
+            <Text style={styles.selectAllText}>Tất cả</Text>
+          </TouchableOpacity>
+        )}
+        {(!cart || cart.items.length === 0) && <View style={styles.placeholder} />}
       </View>
 
       <ScrollView
@@ -1147,9 +1221,11 @@ const CartScreen: React.FC = () => {
           productVouchers={productVouchers}
           selectedShopVouchers={selectedShopVouchers}
           selectedProductVouchers={selectedProductVouchers}
+          selectedIds={selectedIds}
           onCartChange={loadCart}
           onRemoveItem={handleRemoveItem}
           onQuantityChange={handleUpdateQuantity}
+          onToggleItem={handleToggleItem}
           onSelectShopVoucher={(storeId, shopVoucherId, code) => {
             // Kiểm tra voucher eligibility trước khi chọn
             if (shopVoucherId) {
@@ -1356,6 +1432,32 @@ const styles = StyleSheet.create({
   },
   placeholder: {
     width: 30,
+  },
+  selectAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  checkboxChecked: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#FFFFFF',
+  },
+  selectAllText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   loaderContainer: {
     flex: 1,

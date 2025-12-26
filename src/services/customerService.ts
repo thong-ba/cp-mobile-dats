@@ -94,4 +94,38 @@ export const deleteCustomerAddress = async ({
   });
 };
 
+export type UpdateCustomerProfilePayload = {
+  fullName?: string;
+  userName?: string;
+  email?: string;
+  phoneNumber?: string;
+  gender?: 'MALE' | 'FEMALE' | null;
+  dateOfBirth?: string | null; // ISO format: yyyy-MM-dd
+  avatarURL?: string | null;
+  status?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' | null;
+  twoFactorEnabled?: boolean;
+  kycStatus?: 'NONE' | 'PENDING' | 'VERIFIED' | null;
+  preferredCategory?: string | null;
+};
+
+export const updateCustomerProfile = async ({
+  customerId,
+  accessToken,
+  payload,
+}: AuthenticatedCustomerRequest & {
+  payload: UpdateCustomerProfilePayload;
+}): Promise<CustomerProfile> => {
+  const { data } = await httpClient.put<CustomerProfile>(
+    `/customers/${customerId}`,
+    payload,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    },
+  );
+  return data;
+};
+
 

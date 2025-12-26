@@ -26,27 +26,74 @@ const CreateAddressScreen: React.FC = () => {
       return;
     }
 
+    // Validate các trường bắt buộc trước khi gọi API (theo tài liệu)
+    if (!payload.receiverName.trim()) {
+      setErrorMessage('Vui lòng điền đầy đủ thông tin địa chỉ: Tên người nhận là bắt buộc.');
+      return;
+    }
+
+    if (!payload.phoneNumber.trim()) {
+      setErrorMessage('Vui lòng điền đầy đủ thông tin địa chỉ: Số điện thoại là bắt buộc.');
+      return;
+    }
+
+    if (!payload.province || !payload.district || !payload.ward) {
+      setErrorMessage('Vui lòng điền đầy đủ thông tin địa chỉ: Tỉnh/Quận/Phường là bắt buộc.');
+      return;
+    }
+
+    if (!payload.street.trim()) {
+      setErrorMessage('Vui lòng điền đầy đủ thông tin địa chỉ: Tên đường là bắt buộc.');
+      return;
+    }
+
+    // Validate mã địa lý (theo tài liệu)
+    if (!payload.provinceCode || payload.provinceCode.trim() === '') {
+      setErrorMessage('Thiếu mã địa lý: vui lòng chọn Tỉnh/Quận/Phường hợp lệ.');
+      return;
+    }
+
+    if (!payload.districtId || payload.districtId === 0) {
+      setErrorMessage('Thiếu mã địa lý: vui lòng chọn Tỉnh/Quận/Phường hợp lệ.');
+      return;
+    }
+
+    if (!payload.wardCode || payload.wardCode.trim() === '') {
+      setErrorMessage('Thiếu mã địa lý: vui lòng chọn Tỉnh/Quận/Phường hợp lệ.');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
       setErrorMessage(null);
-      await createCustomerAddress({ customerId, accessToken, payload });
-      console.log('[CreateAddressScreen] address created successfully');
+      console.log('[CreateAddressScreen] Creating address with payload:', JSON.stringify(payload, null, 2));
+      const result = await createCustomerAddress({ customerId, accessToken, payload });
+      console.log('[CreateAddressScreen] address created successfully:', result);
       setSuccessVisible(true);
-      // Navigate back after 1.5s
+      // Navigate back after 1.5s (theo tài liệu: reload danh sách, reset form, đóng form)
       setTimeout(() => {
         setSuccessVisible(false);
         navigation.goBack();
       }, 1500);
     } catch (error: any) {
-      console.log('[CreateAddressScreen] create address failed', error);
-      const message =
-        error?.response?.status === 401
-          ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
-          : error?.response?.status === 400
-          ? error?.response?.data?.message || 'Dữ liệu không hợp lệ. Vui lòng kiểm tra lại.'
-          : error?.message?.includes('Network')
-          ? 'Không có kết nối mạng. Vui lòng thử lại.'
-          : 'Không thể tạo địa chỉ. Vui lòng thử lại.';
+      console.error('[CreateAddressScreen] create address failed:', error);
+      console.error('[CreateAddressScreen] error response:', error?.response?.data);
+      console.error('[CreateAddressScreen] error status:', error?.response?.status);
+      // Error handling theo tài liệu
+      let message = 'Thêm địa chỉ thất bại';
+      
+      if (error?.response?.status === 401) {
+        message = 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.';
+      } else if (error?.response?.status === 400) {
+        message = error?.response?.data?.message || 'Dữ liệu không hợp lệ. Vui lòng kiểm tra lại.';
+      } else if (error?.response?.status === 422) {
+        message = error?.response?.data?.message || 'Dữ liệu không hợp lệ. Vui lòng kiểm tra lại.';
+      } else if (error?.message?.includes('Network') || error?.code === 'NETWORK_ERROR') {
+        message = 'Không có kết nối mạng. Vui lòng thử lại.';
+      } else if (error?.response?.data?.message) {
+        message = error.response.data.message;
+      }
+      
       setErrorMessage(message);
     } finally {
       setIsSubmitting(false);

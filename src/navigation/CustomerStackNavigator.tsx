@@ -30,7 +30,7 @@ export type CustomerStackParamList = {
         productVouchers?: Record<string, SelectedVoucher>;
       }
     | undefined;
-  Orders: undefined;
+  Orders: { orderId?: string } | undefined;
   Notifications: undefined;
 };
 
@@ -39,6 +39,7 @@ const Stack = createNativeStackNavigator<CustomerStackParamList>();
 export default function CustomerStackNavigator() {
   return (
     <Stack.Navigator
+      initialRouteName="ProfileMain"
       screenOptions={{
         headerShown: false,
       }}
